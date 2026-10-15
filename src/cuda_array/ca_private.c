@@ -13,24 +13,10 @@
 #include "tensor.h"
 #include "cuda_exceptions.h"
 #include "fusion.h"
-#include "autograd.h"
-#include "indexed_ops.h"
-#include "factory_kernels.h"
-
-static int is_low_precision_dtype(dtype_t dtype)
-{
-    return dtype == DTYPE_FLOAT16 || dtype == DTYPE_BFLOAT16;
-}
 
 tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_type)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
-    if (!b) return NULL;
-    if (is_low_precision_dtype(a->dtype) || is_low_precision_dtype(b->dtype))
-    {
-        CUDA_THROW_INVALID("Elementwise tensor operations do not yet support float16 or bfloat16");
-        return NULL;
-    }
     if (fusion_active()) return fusion_binary(a, b, operation_type);
     if (!fusion_materialize(a) || !fusion_materialize(b)) return NULL;
 
@@ -70,11 +56,7 @@ tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_ty
         return NULL;
     }
 
-    if (!total_elements)
-    {
-        autograd_record_binary(result, a, b, operation_type);
-        return result;
-    }
+    if (!total_elements) return result;
     if (a->data == NULL || b->data == NULL || result->data == NULL)
     {
         cuda_tensor_destroy(result);
@@ -89,25 +71,19 @@ tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_ty
                      result_shape, result_dims,
                      total_elements, 0, 0);
 
-    cudaError_t status = cudaGetLastError();
+    cudaError_t status = cudaDeviceSynchronize();
     if (status != cudaSuccess)
     {
         cuda_tensor_destroy(result);
-        CUDA_THROW_RUNTIME("Broadcast kernel launch failed: %s", cudaGetErrorString(status));
+        CUDA_THROW_RUNTIME("Broadcast operation failed: %s", cudaGetErrorString(status));
         return NULL;
     }
-    autograd_record_binary(result, a, b, operation_type);
     return result;
 }
 
 tensor_t *cuda_scalar_op(tensor_t *a, scalar_value_t scalar, operation_type_t operation_type)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
-    if (is_low_precision_dtype(a->dtype))
-    {
-        CUDA_THROW_INVALID("Elementwise scalar operations do not yet support float16 or bfloat16");
-        return NULL;
-    }
     if (fusion_active()) return fusion_scalar(a, scalar, operation_type, 0);
     if (!fusion_materialize(a)) return NULL;
     if (!is_contiguous(a) && !lazy_copy_metadata_to_gpu(a))
@@ -137,27 +113,21 @@ tensor_t *cuda_scalar_op(tensor_t *a, scalar_value_t scalar, operation_type_t op
                   a->total_size,
                   is_contiguous(a));
 
-    cudaError_t status = cudaGetLastError();
+    cudaError_t status = cudaDeviceSynchronize();
 
     if (status != cudaSuccess)
     {
-        CUDA_THROW_RUNTIME("Scalar kernel launch failed: %s", cudaGetErrorString(status));
+        CUDA_THROW_RUNTIME("Scalar operation failed: %s", cudaGetErrorString(status));
         cuda_tensor_destroy(result);
         return NULL;
     }
 
-    autograd_record_scalar(result, a, scalar, operation_type, 0);
     return result;
 }
 
 tensor_t *cuda_inv_scalar_op(tensor_t *a, scalar_value_t scalar, operation_type_t operation_type)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
-    if (is_low_precision_dtype(a->dtype))
-    {
-        CUDA_THROW_INVALID("Elementwise scalar operations do not yet support float16 or bfloat16");
-        return NULL;
-    }
     if (fusion_active()) return fusion_scalar(a, scalar, operation_type, 1);
     if (!fusion_materialize(a)) return NULL;
     if (!is_contiguous(a) && !lazy_copy_metadata_to_gpu(a))
@@ -189,27 +159,21 @@ tensor_t *cuda_inv_scalar_op(tensor_t *a, scalar_value_t scalar, operation_type_
         a->total_size,
         is_contiguous(a));
 
-    cudaError_t status = cudaGetLastError();
+    cudaError_t status = cudaDeviceSynchronize();
 
     if (status != cudaSuccess)
     {
-        CUDA_THROW_RUNTIME("Scalar kernel launch failed: %s", cudaGetErrorString(status));
+        CUDA_THROW_RUNTIME("Scalar operation failed: %s", cudaGetErrorString(status));
         cuda_tensor_destroy(result);
         return NULL;
     }
 
-    autograd_record_scalar(result, a, scalar, operation_type, 1);
     return result;
 }
 
 tensor_t *cuda_unary_op(tensor_t *a, operation_type_t operation_type)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
-    if (is_low_precision_dtype(a->dtype))
-    {
-        CUDA_THROW_INVALID("Unary operations do not yet support float16 or bfloat16");
-        return NULL;
-    }
     if (fusion_active()) return fusion_unary(a, operation_type);
     if (!fusion_materialize(a)) return NULL;
 
@@ -222,24 +186,19 @@ tensor_t *cuda_unary_op(tensor_t *a, operation_type_t operation_type)
 
     launch_unary_op(a->data, result->data, 0, a->dtype, operation_type, a->shape, a->strides, a->ndims, a->total_size);
     cudaError_t status = cudaGetLastError();
+    if (status == cudaSuccess) status = cudaDeviceSynchronize();
     if (status != cudaSuccess)
     {
-        CUDA_THROW_RUNTIME("Unary kernel launch failed: %s", cudaGetErrorString(status));
+        CUDA_THROW_RUNTIME("Unary operation failed: %s", cudaGetErrorString(status));
         cuda_tensor_destroy(result);
         return NULL;
     }
 
-    autograd_record_unary(result, a, operation_type);
     return result;
 }
 
 tensor_t *cuda_tensor_reduce_arg(tensor_t *input, int axis, operation_type_t operation_type)
 {
-    if (input && is_low_precision_dtype(input->dtype))
-    {
-        CUDA_THROW_INVALID("Arg reductions do not yet support float16 or bfloat16");
-        return NULL;
-    }
     if (fusion_active()) return fusion_reduce(input, axis, operation_type, 1);
     if (!fusion_materialize(input)) return NULL;
     int result_shape_arr[MAX_DIMS];
@@ -274,9 +233,10 @@ tensor_t *cuda_tensor_reduce_arg(tensor_t *input, int axis, operation_type_t ope
         0, NULL);
 
     err = cuda_reduction_status();
+    if (err == cudaSuccess) err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
-        CUDA_THROW_RUNTIME("Arg reduction kernel launch failed: %s", cudaGetErrorString(err));
+        CUDA_THROW_RUNTIME("Failed to synchronize device after reduction: %s", cudaGetErrorString(err));
         cuda_tensor_destroy(result);
         return NULL;
     }
@@ -286,11 +246,6 @@ tensor_t *cuda_tensor_reduce_arg(tensor_t *input, int axis, operation_type_t ope
 
 tensor_t *cuda_tensor_reduce(tensor_t *input, int axis, operation_type_t operation_type)
 {
-    if (input && is_low_precision_dtype(input->dtype))
-    {
-        CUDA_THROW_INVALID("Reductions do not yet support float16 or bfloat16");
-        return NULL;
-    }
     if (fusion_active()) return fusion_reduce(input, axis, operation_type, 0);
     if (!fusion_materialize(input)) return NULL;
     int result_shape_arr[MAX_DIMS];
@@ -305,9 +260,7 @@ tensor_t *cuda_tensor_reduce(tensor_t *input, int axis, operation_type_t operati
         return NULL;
     }
 
-    dtype_t result_dtype = operation_type == OP_REDUCE_ALL || operation_type == OP_REDUCE_ANY
-                               ? DTYPE_BOOL
-                               : operation_type == OP_REDUCE_MEAN
+    dtype_t result_dtype = operation_type == OP_REDUCE_MEAN
                                ? (input->dtype == DTYPE_FLOAT64 || dtype_is_integer(input->dtype) || input->dtype == DTYPE_BOOL
                                       ? DTYPE_FLOAT64
                                       : DTYPE_FLOAT32)
@@ -320,69 +273,10 @@ tensor_t *cuda_tensor_reduce(tensor_t *input, int axis, operation_type_t operati
                      result_shape_arr, input->strides, result_ndims, axis, total_elements_out, 0, NULL);
 
     cudaError_t err = cuda_reduction_status();
+    if (err == cudaSuccess) err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
-        CUDA_THROW_RUNTIME("Reduction kernel launch failed: %s", cudaGetErrorString(err));
-        cuda_tensor_destroy(result);
-        return NULL;
-    }
-
-    autograd_record_reduce(result, input, operation_type, axis);
-    return result;
-}
-
-tensor_t *cuda_tensor_moments_reduce(tensor_t *input, int axis, int correction,
-                                     int standard_deviation)
-{
-    if (!input || input->requires_grad || fusion_active())
-    {
-        CUDA_THROW_INVALID("Direct moments reduction requires an untracked tensor outside Fusion capture");
-        return NULL;
-    }
-    if (is_low_precision_dtype(input->dtype))
-    {
-        CUDA_THROW_INVALID("Moments reductions do not yet support float16 or bfloat16");
-        return NULL;
-    }
-    if (!fusion_materialize(input)) return NULL;
-
-    int result_shape[MAX_DIMS];
-    int result_ndims;
-    size_t total_elements_out;
-    if (axis == REDUCE_GLOBAL_FLAG)
-    {
-        result_shape[0] = 1;
-        result_ndims = 1;
-        total_elements_out = 1;
-    }
-    else
-    {
-        result_ndims = calculate_reduction_shape(input, axis, result_shape, &total_elements_out);
-        if (result_ndims <= 0) return NULL;
-    }
-
-    dtype_t result_dtype = input->dtype == DTYPE_FLOAT32 ? DTYPE_FLOAT32 : DTYPE_FLOAT64;
-    tensor_t *result = cuda_tensor_create_empty_dtype(result_shape, result_ndims, result_dtype);
-    if (!result) return NULL;
-
-    launch_moments_reduction(
-        input->data,
-        result->data,
-        input->dtype,
-        result_dtype,
-        input->shape,
-        input->ndims,
-        input->strides,
-        axis == REDUCE_GLOBAL_FLAG ? -1 : axis,
-        total_elements_out,
-        correction,
-        standard_deviation,
-        NULL);
-
-    cudaError_t error = cuda_reduction_status();
-    if (error != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("Variance reduction kernel failed: %s", cudaGetErrorString(error));
+        CUDA_THROW_RUNTIME("Failed to synchronize device after reduction: %s", cudaGetErrorString(err));
         cuda_tensor_destroy(result);
         return NULL;
     }
@@ -473,214 +367,7 @@ tensor_t *cuda_tensor_reshape(tensor_t *original, int *new_shape, int new_ndims)
         0,
         original->total_size);
 
-    if (reshaped) autograd_record_view(reshaped, original, OP_RESHAPE, NULL);
     return reshaped;
-}
-
-tensor_t *cuda_tensor_broadcast_to(tensor_t *original, int *new_shape, int new_ndims)
-{
-    if (!original || !new_shape || new_ndims < original->ndims || new_ndims > MAX_DIMS)
-    {
-        CUDA_THROW_INVALID("broadcastTo target rank must be at least the input rank and no greater than %d", MAX_DIMS);
-        return NULL;
-    }
-
-    size_t strides[MAX_DIMS] = {0};
-    size_t total_size = 1;
-    int input_offset = new_ndims - original->ndims;
-    for (int axis = 0; axis < new_ndims; axis++)
-    {
-        if (new_shape[axis] < 0)
-        {
-            CUDA_THROW_INVALID("broadcastTo dimensions must be non-negative");
-            return NULL;
-        }
-        if (new_shape[axis] && total_size > SIZE_MAX / (size_t)new_shape[axis])
-        {
-            CUDA_THROW_INVALID("broadcastTo target shape size overflows");
-            return NULL;
-        }
-        total_size *= (size_t)new_shape[axis];
-        int input_axis = axis - input_offset;
-        if (input_axis < 0)
-            continue;
-        int input_size = original->shape[input_axis];
-        if (input_size != new_shape[axis] && input_size != 1)
-        {
-            CUDA_THROW_INVALID("Cannot broadcast dimension %d from %d to %d",
-                               input_axis, input_size, new_shape[axis]);
-            return NULL;
-        }
-        strides[axis] = input_size == 1 && new_shape[axis] != 1
-            ? 0 : original->strides[input_axis];
-    }
-
-    if (fusion_active())
-        return fusion_view(original, OP_BROADCAST, new_shape, strides, new_ndims, NULL);
-    if (!fusion_materialize(original))
-        return NULL;
-    tensor_t *view = cuda_tensor_create_view(original, new_shape, strides, new_ndims, 0, total_size);
-    if (view)
-        autograd_record_view(view, original, OP_BROADCAST, NULL);
-    return view;
-}
-
-int cuda_tensor_validate_indexed_shapes(tensor_t *input, tensor_t *indices,
-                                       tensor_t *updates, int axis, const char *operation)
-{
-    if (!input || !indices || axis < 0 || axis >= input->ndims ||
-        indices->ndims != input->ndims || indices->dtype != DTYPE_INT32)
-    {
-        CUDA_THROW_INVALID("%s requires int32 indices with the same rank and a valid axis", operation);
-        return 0;
-    }
-    for (int dimension = 0; dimension < input->ndims; dimension++)
-    {
-        if (dimension != axis && input->shape[dimension] != indices->shape[dimension])
-        {
-            CUDA_THROW_INVALID("%s input and index shapes must match outside the indexed axis", operation);
-            return 0;
-        }
-        if (updates && updates->shape[dimension] != indices->shape[dimension])
-        {
-            CUDA_THROW_INVALID("%s updates must have the same shape as indices", operation);
-            return 0;
-        }
-    }
-    if (updates && updates->dtype != input->dtype)
-    {
-        CUDA_THROW_INVALID("%s input and updates must have the same dtype", operation);
-        return 0;
-    }
-    return 1;
-}
-
-tensor_t *cuda_tensor_gather(tensor_t *input, tensor_t *indices, int axis)
-{
-    if (input && is_low_precision_dtype(input->dtype))
-    {
-        CUDA_THROW_INVALID("gather does not yet support float16 or bfloat16");
-        return NULL;
-    }
-    if (fusion_active())
-        return fusion_indexed_gather(input, indices, axis);
-    if (!cuda_tensor_validate_indexed_shapes(input, indices, NULL, axis, "gather"))
-        return NULL;
-    if (!fusion_materialize(input) || !fusion_materialize(indices))
-        return NULL;
-
-    cudaError_t status = cuda_validate_indices(indices->data, indices->shape,
-        indices->strides, indices->ndims, axis, input->shape[axis], indices->total_size);
-    if (status != cudaSuccess)
-    {
-        if (status == cudaErrorInvalidValue)
-            CUDA_THROW_INVALID("gather indices must be within [0, %d)", input->shape[axis]);
-        else
-            CUDA_THROW_RUNTIME("Failed to validate gather indices: %s", cudaGetErrorString(status));
-        return NULL;
-    }
-
-    tensor_t *result = cuda_tensor_create_empty_dtype(indices->shape, indices->ndims, input->dtype);
-    if (!result) return NULL;
-    status = cuda_launch_gather(input->data, indices->data, result->data, input->dtype,
-        input->shape, input->strides, indices->shape, indices->strides,
-        input->ndims, axis, indices->total_size);
-    if (status != cudaSuccess)
-    {
-        cuda_tensor_destroy(result);
-        CUDA_THROW_RUNTIME("gather kernel failed: %s", cudaGetErrorString(status));
-        return NULL;
-    }
-    autograd_record_gather(result, input, indices, axis);
-    return result;
-}
-
-tensor_t *cuda_tensor_scatter_add(tensor_t *input, tensor_t *indices,
-                                  tensor_t *updates, int axis)
-{
-    if (fusion_active())
-        return fusion_indexed_scatter_add(input, indices, updates, axis);
-    if (!cuda_tensor_validate_indexed_shapes(input, indices, updates, axis, "scatterAdd"))
-        return NULL;
-    if (input->dtype != DTYPE_FLOAT32 && input->dtype != DTYPE_FLOAT64)
-    {
-        CUDA_THROW_INVALID("scatterAdd currently supports float32 and float64 tensors");
-        return NULL;
-    }
-    if (!fusion_materialize(input) || !fusion_materialize(indices) ||
-        !fusion_materialize(updates))
-        return NULL;
-
-    cudaError_t status = cuda_validate_indices(indices->data, indices->shape,
-        indices->strides, indices->ndims, axis, input->shape[axis], indices->total_size);
-    if (status != cudaSuccess)
-    {
-        if (status == cudaErrorInvalidValue)
-            CUDA_THROW_INVALID("scatterAdd indices must be within [0, %d)", input->shape[axis]);
-        else
-            CUDA_THROW_RUNTIME("Failed to validate scatterAdd indices: %s", cudaGetErrorString(status));
-        return NULL;
-    }
-
-    tensor_t *result = cuda_tensor_create_empty_dtype(input->shape, input->ndims, input->dtype);
-    if (!result) return NULL;
-    status = cuda_launch_scatter_copy(input->data, result->data, input->dtype,
-        input->shape, input->strides, input->ndims, input->total_size);
-    if (status == cudaSuccess)
-        status = cuda_launch_scatter_add(indices->data, updates->data, result->data,
-            input->dtype, indices->shape, result->strides, indices->strides,
-            updates->strides, input->ndims, axis, input->shape[axis], updates->total_size);
-    if (status != cudaSuccess)
-    {
-        cuda_tensor_destroy(result);
-        CUDA_THROW_RUNTIME("scatterAdd kernel failed: %s", cudaGetErrorString(status));
-        return NULL;
-    }
-    autograd_record_scatter_add(result, input, indices, updates, axis);
-    return result;
-}
-
-tensor_t *cuda_tensor_slice_scatter(tensor_t *updates, const int *input_shape,
-                                    int input_ndims, const int *axes,
-                                    const int *starts, const int *steps)
-{
-    if (!updates || !input_shape || !starts || !steps ||
-        input_ndims < 0 || input_ndims > MAX_DIMS ||
-        updates->ndims < 0 || updates->ndims > MAX_DIMS ||
-        (updates->ndims > 0 && (!axes || !updates->shape || !updates->strides)))
-    {
-        CUDA_THROW_INVALID("Invalid slice gradient metadata");
-        return NULL;
-    }
-    if (updates->dtype != DTYPE_FLOAT32 && updates->dtype != DTYPE_FLOAT64)
-    {
-        CUDA_THROW_INVALID("Slice gradients currently support float32 and float64 tensors");
-        return NULL;
-    }
-    if (fusion_active())
-        return fusion_slice_scatter(updates, input_shape, input_ndims,
-                                    axes, starts, steps);
-    if (!fusion_materialize(updates))
-        return NULL;
-
-    scalar_value_t zero = {0};
-    zero.dtype = updates->dtype;
-    tensor_t *result = cuda_tensor_create_with_value((int *)input_shape, input_ndims,
-                                                      zero, updates->dtype);
-    if (!result)
-        return NULL;
-
-    cudaError_t status = cuda_launch_slice_scatter(
-        updates->data, result->data, updates->dtype, input_shape, input_ndims,
-        updates->strides, updates->shape, axes, starts, steps,
-        updates->ndims, updates->total_size);
-    if (status != cudaSuccess)
-    {
-        cuda_tensor_destroy(result);
-        CUDA_THROW_RUNTIME("Slice gradient kernel failed: %s", cudaGetErrorString(status));
-        return NULL;
-    }
-    return result;
 }
 
 tensor_t *cuda_tensor_transpose(tensor_t *tensor, int *axis, int axis_len)
@@ -725,20 +412,12 @@ tensor_t *cuda_tensor_transpose(tensor_t *tensor, int *axis, int axis_len)
         0,
         tensor->total_size);
 
-    if (transposed) autograd_record_view(transposed, tensor, OP_TRANSPOSE, axis);
     return transposed ? transposed : NULL;
 }
 
 tensor_t *cuda_tensor_matmul_nd(tensor_t *a, tensor_t *b)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
-    if (!b || a->dtype != b->dtype ||
-        (a->dtype != DTYPE_FLOAT32 && a->dtype != DTYPE_FLOAT16 &&
-         a->dtype != DTYPE_BFLOAT16))
-    {
-        CUDA_THROW_INVALID("matmul requires matching float32, float16 or bfloat16 operands");
-        return NULL;
-    }
 
     int result_ndims;
     int result_shape[MAX_DIMS];
@@ -753,23 +432,17 @@ tensor_t *cuda_tensor_matmul_nd(tensor_t *a, tensor_t *b)
         return NULL;
     }
 
-    tensor_t *result = cuda_tensor_create_empty_dtype(result_shape, result_ndims, a->dtype);
+    tensor_t *result = cuda_tensor_create_empty(result_shape, result_ndims);
     if (result == NULL)
     {
         return NULL;
     }
 
-    int status = a->dtype == DTYPE_FLOAT32
-        ? cuda_batched_matmul_nd_launcher(
-            a->data, b->data, result->data,
-            a->shape, a->strides, a->ndims,
-            b->shape, b->strides, b->ndims,
-            result->shape, result->strides, result->ndims, NULL)
-        : cuda_low_precision_matmul_nd_launcher(
-            a->data, b->data, result->data, a->dtype,
-            a->shape, a->strides, a->ndims,
-            b->shape, b->strides, b->ndims,
-            result->shape, result->strides, result->ndims, NULL);
+    int status = cuda_batched_matmul_nd_launcher(
+        a->data, b->data, result->data,
+        a->shape, a->strides, a->ndims,
+        b->shape, b->strides, b->ndims,
+        result->shape, result->strides, result->ndims, NULL);
 
     if (status == 0)
     {
@@ -787,13 +460,6 @@ tensor_t *cuda_tensor_matmul(tensor_t *a, tensor_t *b)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
     if (fusion_active()) return fusion_matmul(a, b);
-    if (!b || a->dtype != b->dtype ||
-        (a->dtype != DTYPE_FLOAT32 && a->dtype != DTYPE_FLOAT16 &&
-         a->dtype != DTYPE_BFLOAT16))
-    {
-        CUDA_THROW_INVALID("matmul requires matching float32, float16 or bfloat16 operands");
-        return NULL;
-    }
     if (!fusion_materialize(a) || !fusion_materialize(b)) return NULL;
     if (a->ndims < 2 || b->ndims < 2)
     {
@@ -802,16 +468,7 @@ tensor_t *cuda_tensor_matmul(tensor_t *a, tensor_t *b)
 
     if (a->ndims != 2 || b->ndims != 2)
     {
-        tensor_t *result = cuda_tensor_matmul_nd(a, b);
-        if (result) autograd_record_matmul(result, a, b);
-        return result;
-    }
-
-    if (a->dtype != DTYPE_FLOAT32)
-    {
-        tensor_t *result = cuda_tensor_matmul_nd(a, b);
-        if (result) autograd_record_matmul(result, a, b);
-        return result;
+        return cuda_tensor_matmul_nd(a, b);
     }
 
     if (a->shape[1] != b->shape[0])
@@ -843,7 +500,6 @@ tensor_t *cuda_tensor_matmul(tensor_t *a, tensor_t *b)
         return NULL;
     }
 
-    autograd_record_matmul(result, a, b);
     return result;
 }
 
@@ -852,23 +508,18 @@ tensor_t *cuda_tensor_copy(tensor_t *tensor)
     if (!tensor)
         return NULL;
 
-    tensor_t *copy = cuda_tensor_create_empty_dtype(tensor->shape, tensor->ndims,
-                                                     tensor->dtype);
+    tensor_t *copy = cuda_tensor_create_empty(tensor->shape, tensor->ndims);
     if (!copy)
         return NULL;
 
-    cudaError_t cuda_status = is_contiguous(tensor)
-        ? cudaMemcpy(copy->data, tensor->data,
-                     tensor->total_size * tensor->element_size,
-                     cudaMemcpyDeviceToDevice)
-        : launch_pack_strided(tensor->data, copy->data,
-                              tensor->total_size, tensor->element_size,
-                              tensor->shape, tensor->strides, tensor->ndims);
+    cudaError_t cuda_status = cudaMemcpy(
+        copy->data, tensor->data,
+        tensor->total_size * sizeof(float),
+        cudaMemcpyDeviceToDevice);
 
     if (cuda_status != cudaSuccess)
     {
         cuda_tensor_destroy(copy);
-        CUDA_THROW_RUNTIME("Tensor copy failed: %s", cudaGetErrorString(cuda_status));
         return NULL;
     }
 

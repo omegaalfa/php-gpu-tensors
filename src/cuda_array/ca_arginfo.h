@@ -115,53 +115,6 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_cuda_array_reduce, 0, 0, Cuda\\Cu
 ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, axis, IS_LONG, 1, "null")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_stat, 0, 0, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, axis, IS_LONG, 1, "null")
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, correction, IS_LONG, 0, "0")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_cuda_array_softmax, 0, 0, Cuda\\CudaArray, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, axis, IS_LONG, 0, "-1")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_cuda_array_layerNorm, 0, 1, Cuda\\CudaArray, 0)
-ZEND_ARG_TYPE_INFO(0, axes, IS_ARRAY, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, epsilon, IS_DOUBLE, 0, "0.00001")
-ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, scale, Cuda\\CudaArray, 1, "null")
-ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, bias, Cuda\\CudaArray, 1, "null")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_clamp, 0, 0, 0)
-ZEND_ARG_TYPE_MASK(0, min, MAY_BE_LONG | MAY_BE_DOUBLE | MAY_BE_NULL, "null")
-ZEND_ARG_TYPE_MASK(0, max, MAY_BE_LONG | MAY_BE_DOUBLE | MAY_BE_NULL, "null")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_axis_view, 0, 0, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, axis, IS_LONG, 1, "null")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_unsqueeze, 0, 0, 1)
-ZEND_ARG_TYPE_INFO(0, axis, IS_LONG, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_broadcast, 0, 0, 1)
-ZEND_ARG_TYPE_INFO(0, shape, IS_ARRAY, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_item, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_gather, 0, 0, 1)
-ZEND_ARG_OBJ_INFO(0, indices, Cuda\\CudaArray, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, axis, IS_LONG, 0, "0")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_scatter_add, 0, 0, 2)
-ZEND_ARG_OBJ_INFO(0, indices, Cuda\\CudaArray, 0)
-ZEND_ARG_OBJ_INFO(0, updates, Cuda\\CudaArray, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, axis, IS_LONG, 0, "0")
-ZEND_END_ARG_INFO()
-
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_reshape, 0, 0, 1)
 ZEND_ARG_ARRAY_INFO(0, shape, 0)
 ZEND_END_ARG_INFO()
@@ -201,24 +154,6 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_dtype, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_cuda_array_requiresGrad, 0, 0, Cuda\\CudaArray, 0)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, requiresGrad, _IS_BOOL, 0, "true")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_backward, 0, 0, 0)
-ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, gradient, Cuda\\CudaArray, 1, "null")
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, retainGraph, _IS_BOOL, 0, "false")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_cuda_array_grad, 0, 0, Cuda\\CudaArray, 1)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_cuda_array_zeroGrad, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_cuda_array_detach, 0, 0, Cuda\\CudaArray, 0)
-ZEND_END_ARG_INFO()
-
 static zend_function_entry cuda_array_methods[] = {
     ZEND_ME(CudaArray, __construct, arginfo_cuda_array_construct, ZEND_ACC_PUBLIC | ZEND_ACC_CTOR)
     ZEND_ME(CudaArray, fromBuffer, arginfo_cuda_array_fromBuffer, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
@@ -237,9 +172,6 @@ static zend_function_entry cuda_array_methods[] = {
                         ZEND_ME(CudaArray, divide, arginfo_cuda_array_divide, ZEND_ACC_PUBLIC)
                             ZEND_ME(CudaArray, add, arginfo_cuda_array_add, ZEND_ACC_PUBLIC)
                                 ZEND_ME(CudaArray, subtract, arginfo_cuda_array_subtract, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, maximum, arginfo_cuda_array_binary, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, minimum, arginfo_cuda_array_binary, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, clamp, arginfo_cuda_array_clamp, ZEND_ACC_PUBLIC)
                                     ZEND_ME(CudaArray, matmul, arginfo_cuda_array_matmul, ZEND_ACC_PUBLIC)
                                         ZEND_ME(CudaArray, transpose, arginfo_cuda_array_transpose, ZEND_ACC_PUBLIC)
                                             ZEND_ME(CudaArray, power, arginfo_cuda_array_binary, ZEND_ACC_PUBLIC)
@@ -268,15 +200,6 @@ static zend_function_entry cuda_array_methods[] = {
                                                                                                                                     ZEND_ME(CudaArray, prod, arginfo_cuda_array_reduce, ZEND_ACC_PUBLIC)
                                                                                                                                         ZEND_ME(CudaArray, argMax, arginfo_cuda_array_reduce, ZEND_ACC_PUBLIC)
                                                                                                                                             ZEND_ME(CudaArray, argMin, arginfo_cuda_array_reduce, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, all, arginfo_cuda_array_axis_view, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, any, arginfo_cuda_array_axis_view, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, var, arginfo_cuda_array_stat, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, std, arginfo_cuda_array_stat, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, softmax, arginfo_cuda_array_softmax, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, layerNorm, arginfo_cuda_array_layerNorm, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, item, arginfo_cuda_array_item, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, gather, arginfo_cuda_array_gather, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, scatterAdd, arginfo_cuda_array_scatter_add, ZEND_ACC_PUBLIC)
 
                                                                                                                                                 ZEND_ME(CudaArray, getShape, arginfo_cuda_array_getShape, ZEND_ACC_PUBLIC)
                                                                                                                                                     ZEND_ME(CudaArray, getStrides, arginfo_cuda_array_getStrides, ZEND_ACC_PUBLIC)
@@ -287,9 +210,6 @@ static zend_function_entry cuda_array_methods[] = {
                                                                                                                                                                     ZEND_ME(CudaArray, toHost, arginfo_cuda_array_toHost, ZEND_ACC_PUBLIC)
     ZEND_ME(CudaArray, toBuffer, arginfo_cuda_array_toBuffer, ZEND_ACC_PUBLIC)
                                                                                                                                                                         ZEND_ME(CudaArray, reshape, arginfo_cuda_array_reshape, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, squeeze, arginfo_cuda_array_axis_view, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, unsqueeze, arginfo_cuda_array_unsqueeze, ZEND_ACC_PUBLIC)
-    ZEND_ME(CudaArray, broadcastTo, arginfo_cuda_array_broadcast, ZEND_ACC_PUBLIC)
                                                                                                                                                                             ZEND_ME(CudaArray, flatten, arginfo_cuda_array_flatten, ZEND_ACC_PUBLIC)
 
                                                                                                                                                                                 ZEND_ME(CudaArray, zeros, arginfo_cuda_array_zeros, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
@@ -299,11 +219,6 @@ static zend_function_entry cuda_array_methods[] = {
 
                                                                                                                                                                                                 ZEND_ME(CudaArray, astype, arginfo_cuda_array_astype, ZEND_ACC_PUBLIC)
                                                                                                                                                                                                     ZEND_ME(CudaArray, dtype, arginfo_cuda_array_dtype, ZEND_ACC_PUBLIC)
-                                                                                                                                                                                                        ZEND_ME(CudaArray, requiresGrad, arginfo_cuda_array_requiresGrad, ZEND_ACC_PUBLIC)
-                                                                                                                                                                                                            ZEND_ME(CudaArray, backward, arginfo_cuda_array_backward, ZEND_ACC_PUBLIC)
-                                                                                                                                                                                                                ZEND_ME(CudaArray, grad, arginfo_cuda_array_grad, ZEND_ACC_PUBLIC)
-                                                                                                                                                                                                                    ZEND_ME(CudaArray, zeroGrad, arginfo_cuda_array_zeroGrad, ZEND_ACC_PUBLIC)
-                                                                                                                                                                                                                        ZEND_ME(CudaArray, detach, arginfo_cuda_array_detach, ZEND_ACC_PUBLIC)
 
                                                                                                                                                                                                         PHP_FE_END};
 

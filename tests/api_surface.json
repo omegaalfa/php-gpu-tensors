@@ -796,40 +796,6 @@
                     ],
                     "returnType": "self"
                 },
-                "all": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "?int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "any": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "?int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "argMax": {
                     "static": false,
                     "abstract": false,
@@ -881,80 +847,11 @@
                     ],
                     "returnType": "self"
                 },
-                "backward": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "gradient",
-                            "type": "?Cuda\\CudaArray",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        },
-                        {
-                            "name": "retainGraph",
-                            "type": "bool",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": false
-                        }
-                    ],
-                    "returnType": "void"
-                },
-                "broadcastTo": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "shape",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "ceil": {
                     "static": false,
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
-                    "returnType": "self"
-                },
-                "clamp": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "min",
-                            "type": "int|float|null",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        },
-                        {
-                            "name": "max",
-                            "type": "int|float|null",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        }
-                    ],
                     "returnType": "self"
                 },
                 "concat": {
@@ -984,13 +881,6 @@
                     "returnType": "self"
                 },
                 "cos": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [],
-                    "returnType": "self"
-                },
-                "detach": {
                     "static": false,
                     "abstract": false,
                     "returnsReference": false,
@@ -1216,32 +1106,6 @@
                     ],
                     "returnType": "self"
                 },
-                "gather": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "indices",
-                            "type": "self",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "axis",
-                            "type": "int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "ge": {
                     "static": false,
                     "abstract": false,
@@ -1287,13 +1151,6 @@
                     "parameters": [],
                     "returnType": "array"
                 },
-                "grad": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [],
-                    "returnType": "?Cuda\\CudaArray"
-                },
                 "gt": {
                     "static": false,
                     "abstract": false,
@@ -1306,57 +1163,6 @@
                             "variadic": false,
                             "optional": false,
                             "hasDefault": false,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "item": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [],
-                    "returnType": "int|float|bool"
-                },
-                "layerNorm": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axes",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "epsilon",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 1.0e-5
-                        },
-                        {
-                            "name": "scale",
-                            "type": "?Cuda\\CudaArray",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        },
-                        {
-                            "name": "bias",
-                            "type": "?Cuda\\CudaArray",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
                             "default": null
                         }
                     ],
@@ -1437,23 +1243,6 @@
                     ],
                     "returnType": "self"
                 },
-                "maximum": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "other",
-                            "type": "Cuda\\CudaArray|int|float|bool",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "mean": {
                     "static": false,
                     "abstract": false,
@@ -1483,23 +1272,6 @@
                             "variadic": false,
                             "optional": true,
                             "hasDefault": true,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "minimum": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "other",
-                            "type": "Cuda\\CudaArray|int|float|bool",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
                             "default": null
                         }
                     ],
@@ -1650,23 +1422,6 @@
                     ],
                     "returnType": "self"
                 },
-                "requiresGrad": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "requiresGrad",
-                            "type": "bool",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": true
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "reshape": {
                     "static": false,
                     "abstract": false,
@@ -1689,41 +1444,6 @@
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
-                    "returnType": "self"
-                },
-                "scatterAdd": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "indices",
-                            "type": "self",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "updates",
-                            "type": "self",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "axis",
-                            "type": "int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0
-                        }
-                    ],
                     "returnType": "self"
                 },
                 "sin": {
@@ -1750,71 +1470,11 @@
                     ],
                     "returnType": "self"
                 },
-                "softmax": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": -1
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "sqrt": {
                     "static": false,
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
-                    "returnType": "self"
-                },
-                "squeeze": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "?int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "std": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "?int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        },
-                        {
-                            "name": "correction",
-                            "type": "int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0
-                        }
-                    ],
                     "returnType": "self"
                 },
                 "subtract": {
@@ -1896,49 +1556,6 @@
                     ],
                     "returnType": "self"
                 },
-                "unsqueeze": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "var": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "axis",
-                            "type": "?int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        },
-                        {
-                            "name": "correction",
-                            "type": "int",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0
-                        }
-                    ],
-                    "returnType": "self"
-                },
                 "where": {
                     "static": true,
                     "abstract": false,
@@ -1973,13 +1590,6 @@
                         }
                     ],
                     "returnType": "self"
-                },
-                "zeroGrad": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [],
-                    "returnType": "void"
                 },
                 "zeros": {
                     "static": true,
@@ -2550,188 +2160,6 @@
                 }
             }
         },
-        "Cuda\\Optimizer": {
-            "parent": null,
-            "abstract": false,
-            "final": true,
-            "methods": {
-                "adamW": {
-                    "static": true,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "learningRate",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0.001
-                        },
-                        {
-                            "name": "beta1",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0.9
-                        },
-                        {
-                            "name": "beta2",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0.999
-                        },
-                        {
-                            "name": "epsilon",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 1.0e-8
-                        },
-                        {
-                            "name": "weightDecay",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0.01
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "initState": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "parameters",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "array"
-                },
-                "sgd": {
-                    "static": true,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "learningRate",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0.01
-                        },
-                        {
-                            "name": "momentum",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0
-                        },
-                        {
-                            "name": "weightDecay",
-                            "type": "float",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": 0
-                        }
-                    ],
-                    "returnType": "self"
-                },
-                "step": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "parameters",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "gradients",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "state",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        },
-                        {
-                            "name": "learningRate",
-                            "type": "?Cuda\\CudaArray",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        },
-                        {
-                            "name": "weightDecayMask",
-                            "type": "?array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": true,
-                            "hasDefault": true,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "array"
-                },
-                "zeroGrad": {
-                    "static": false,
-                    "abstract": false,
-                    "returnsReference": false,
-                    "parameters": [
-                        {
-                            "name": "parameters",
-                            "type": "array",
-                            "byReference": false,
-                            "variadic": false,
-                            "optional": false,
-                            "hasDefault": false,
-                            "default": null
-                        }
-                    ],
-                    "returnType": "void"
-                }
-            }
-        },
         "Cuda\\OutOfMemoryException": {
             "parent": "Cuda\\RuntimeException",
             "abstract": false,
@@ -2836,46 +2264,9 @@
             ],
             "returnType": "bool"
         },
-        "cuda_set_matmul_precision": {
-            "parameters": [
-                {
-                    "name": "precision",
-                    "type": "string",
-                    "byReference": false,
-                    "variadic": false,
-                    "optional": false,
-                    "hasDefault": false,
-                    "default": null
-                }
-            ],
-            "returnType": "void"
-        },
         "cuda_synchronize": {
             "parameters": [],
             "returnType": "bool"
-        },
-        "cuda_tune_matmul": {
-            "parameters": [
-                {
-                    "name": "left",
-                    "type": "Cuda\\CudaArray",
-                    "byReference": false,
-                    "variadic": false,
-                    "optional": false,
-                    "hasDefault": false,
-                    "default": null
-                },
-                {
-                    "name": "right",
-                    "type": "Cuda\\CudaArray",
-                    "byReference": false,
-                    "variadic": false,
-                    "optional": false,
-                    "hasDefault": false,
-                    "default": null
-                }
-            ],
-            "returnType": "array"
         }
     }
 }

@@ -2,7 +2,6 @@
 #define TENSOR_H
 
 #include <cuda_runtime.h>
-#include <stdint.h>
 #include "data_types.h"
 #ifndef __CUDACC__
 #include "cuda_exceptions.h"
@@ -13,7 +12,6 @@
 
 struct _operation_t;
 struct fusion_node;
-struct autograd_node;
 
 typedef enum
 {
@@ -59,11 +57,6 @@ typedef struct tensor
     int is_dirty;
     int is_contiguous_cached;
     struct fusion_node *fusion;
-    struct autograd_node *grad_fn;
-    struct tensor *grad;
-    int requires_grad;
-    uint64_t mutation_version;
-    int autograd_consumed;
     int fusion_failed;
     size_t fusion_readers;
 } tensor_t;

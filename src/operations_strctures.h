@@ -44,13 +44,7 @@ typedef enum
     OP_TRANSPOSE,
     OP_SLICE,
 
-    OP_MATMUL,
-
-    OP_MAXIMUM,
-    OP_MINIMUM,
-    OP_BROADCAST,
-    OP_REDUCE_ALL,
-    OP_REDUCE_ANY
+    OP_MATMUL
 } operation_type_t;
 
 #endif

@@ -1,7 +1,7 @@
 --TEST--
 Fast constructor, packed PHP export and binary transfers preserve types, layouts and validation
 --INI--
-memory_limit=2G
+memory_limit=512M
 --SKIPIF--
 <?php
 if (!extension_loaded('cuda')) die('skip cuda extension unavailable');

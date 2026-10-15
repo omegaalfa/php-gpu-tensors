@@ -1,10 +1,8 @@
 #include "fusion_internal.h"
-#include "autograd.h"
 #include "cuda_array_ce.h"
 #include "reduction_ops.h"
 #include "zend_interfaces.h"
 #include "zend_fibers.h"
-#include "factory_kernels.h"
 #include <time.h>
 
 typedef struct
@@ -93,17 +91,11 @@ static int fusion_materialize_roots(tensor_t **roots, size_t count)
             if (!values[i] || values[i] == target) continue;
             tensor_t *result = values[i];
             int references = target->ref_count + result->ref_count - 1;
-            struct autograd_node *grad_fn = target->grad_fn;
-            tensor_t *gradient = target->grad;
-            int requires_grad = target->requires_grad;
             fusion_release_node(target);
             if (target->shape) efree(target->shape);
             if (target->strides) efree(target->strides);
             *target = *result;
             target->ref_count = references;
-            target->grad_fn = grad_fn;
-            target->grad = gradient;
-            target->requires_grad = requires_grad;
             efree(result);
             values[i] = target;
         }
@@ -117,27 +109,6 @@ static int fusion_materialize_roots(tensor_t **roots, size_t count)
 tensor_t *fusion_cast_eager(tensor_t *a, dtype_t dtype)
 {
     if (!fusion_materialize(a)) return NULL;
-    if (a->dtype == DTYPE_FLOAT16 || a->dtype == DTYPE_BFLOAT16 ||
-        dtype == DTYPE_FLOAT16 || dtype == DTYPE_BFLOAT16)
-    {
-        tensor_t *result = cuda_tensor_create_empty_with_dtype(a->shape, a->ndims, dtype);
-        if (!result) return NULL;
-        cudaError_t status = launch_tensor_cast(a->data, result->data, a->dtype,
-                                                dtype, a->total_size);
-        if (status != cudaSuccess)
-        {
-            cuda_tensor_destroy(result);
-            CUDA_THROW_RUNTIME("Low-precision dtype conversion failed: %s",
-                               cudaGetErrorString(status));
-            return NULL;
-        }
-        if (!autograd_record_cast(result, a))
-        {
-            cuda_tensor_destroy(result);
-            return NULL;
-        }
-        return result;
-    }
     fusion_scope *scope = ecalloc(1, sizeof(fusion_scope));
     CUDA_G(fusion_scope) = scope;
     tensor_t *result = fusion_cast(a, dtype);
@@ -342,7 +313,6 @@ ZEND_METHOD(Fusion, compile)
             memcpy(placeholder->strides, example->strides, example->ndims * sizeof(size_t));
         placeholder->is_contiguous_cached = -1;
         placeholder->fusion->parameter = (int)initialized;
-        placeholder->requires_grad = example->requires_grad;
         input_tensors[initialized] = placeholder;
         fusion_wrap(&arguments[initialized++], placeholder);
     }

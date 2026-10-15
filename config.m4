@@ -20,6 +20,10 @@ if test "$PHP_CUDA" != "no"; then
     if test "$NVCC" = "no"; then
         AC_MSG_ERROR([nvcc not found - please install CUDA toolkit])
     fi
+    dnl CUDA 13.1 is not compatible with GCC 15 on Ubuntu 26.04.
+    if test -x /usr/bin/g++-14; then
+        NVCC="$NVCC -ccbin /usr/bin/g++-14"
+    fi
 
     PHP_ADD_INCLUDE($PHP_CUDA/include)
     PHP_ADD_INCLUDE([src])
@@ -98,22 +102,9 @@ if test "$PHP_CUDA" != "no"; then
         AC_MSG_ERROR([CUB headers required; install CUDA toolkit development headers])
     fi
     CUDNN_ROOT="${CUDA_CUDNN_ROOT:-$PHP_CUDA}"
-    if test -z "${CUDA_CUDNN_ROOT:-}" &&
-       test ! -f "$CUDNN_ROOT/include/cudnn.h" &&
-       test -f /usr/include/cudnn.h; then
-        CUDNN_ROOT="/usr"
-    fi
     CUDNN_LIB_DIR="$CUDNN_ROOT/lib64"
     if test ! -f "$CUDNN_LIB_DIR/libcudnn.so"; then
         CUDNN_LIB_DIR="$CUDNN_ROOT/lib"
-    fi
-    if test ! -f "$CUDNN_LIB_DIR/libcudnn.so"; then
-        for CUDNN_CANDIDATE in /usr/lib/*-linux-gnu; do
-            if test -f "$CUDNN_CANDIDATE/libcudnn.so"; then
-                CUDNN_LIB_DIR="$CUDNN_CANDIDATE"
-                break
-            fi
-        done
     fi
     if test "${CUDA_USE_CUDNN:-auto}" != "no" && test -f "$CUDNN_ROOT/include/cudnn.h"; then
         PHP_CHECK_LIBRARY(cudnn, cudnnCreate, [
@@ -172,11 +163,9 @@ if test "$PHP_CUDA" != "no"; then
     src/cuda_array/cuda_array_ce.c \ 
     src/contiguous_array_ce.c \
     src/nn.c \
-    src/optimizer.c \
     src/cuda_array/ca_private.c \
     src/cuda_array/tensor_transfer.c \
     src/data_types.c \
-    src/autograd.c \
     src/tensor.c \
     src/cuda/memory_pool.c \
     src/cuda_array/tensor_factory.c \

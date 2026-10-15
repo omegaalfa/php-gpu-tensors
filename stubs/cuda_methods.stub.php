@@ -3,21 +3,6 @@
 /** Compiled backend capabilities and actual per-thread/request dispatch counters; no GPU work is submitted. */
 function cuda_get_backend_info(): array {}
 
-/**
- * Select strict FP32 or opt-in TF32 math for cuBLAS GEMMs.
- *
- * @throws \Cuda\InvalidArgumentException|\Cuda\RuntimeException
- */
-function cuda_set_matmul_precision(string $precision): void {}
-
-/**
- * Explicitly benchmark and cache a cuBLASLt algorithm for a compatible 2D FP32 GEMM.
- * This blocks while testing zero-workspace candidates and must be called outside Fusion capture.
- * @throws \Cuda\InvalidArgumentException|\Cuda\RuntimeException
- * @return array{backend:string,precision:string,selectedCandidate:int,candidateCount:int,candidates:list<array{algorithmId:int,workspaceBytes:int,medianMs:float,selected:bool}>}
- */
-function cuda_tune_matmul(Cuda\CudaArray $left, Cuda\CudaArray $right): array {}
-
 /** Return the number of CUDA devices visible to this process. @throws \Cuda\RuntimeException */
 function cuda_get_device_count(): int
 {

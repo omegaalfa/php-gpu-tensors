@@ -13,45 +13,8 @@ This directory contains functional implementations of the extension's API. The e
 | `05_jit_async_execution.php` | Concurrency | Non-blocking execution, Op polling, Stream sync. |
 | `06_serialize_compiled_module.php` | JIT Serialization | PHP Serialize CompiledModule object example |
 | `07_fusion_graph.php` | Fusion and CUDA Graph | Scoped capture, compiled replay, private streams, async result and optional timing comparison |
-| `08_gpu_classifier.php` | Neural Network Training | End-to-end MLP classifier, stored/replayed Fusion plans, AdamW/SGD optimizers, dataset orchestration (MNIST/CSV). |
-
-`10_kernel_benchmark.php` measures square, skinny, MLP/classifier, transposed,
-strided, batched, and broadcast matmul shapes alongside large reductions. It
-checks outputs and records the dispatched backend per matmul case. It also
-compares eager, Fusion, and CUDA Graph replay for elementwise chains and
-reductions around a native boundary. It also measures repeated same-shape
-allocation/release workloads to expose memory-pool reuse latency. See the root
-README for command-line options; use `--precision=tf32` to measure the
-opt-in Tensor Core mode. Use `--tune-matmul` to benchmark and cache eligible
-cuBLASLt algorithms before timing the matrix workloads.
-
-Example 08 starts with one PHP `$config` array in
-`08_gpu_classifier.php`. Change `dataset`, `hiddenLayers`, `epochs`,
-`batchSize`, `optimizer`, or `learningRate` there; set `learningRate` to `null`
-to use the optimizer's default. Command-line options remain available for
-advanced data and reporting options and override the PHP settings. Model math,
-data preparation, and Fusion internals are kept under `Support/` so the example
-entrypoint can focus on the settings a PHP developer is most likely to change.
-Its SGD and AdamW updates use `Cuda\Optimizer`, with state passed explicitly so
-the optimizer steps can be captured by Fusion. It compiles and retains
-`Cuda\FusionGraph` plans by batch shape, then calls `run()` for each step rather
-than recompiling in the training loop. `--profile` reports fused kernel counts
-and native boundaries for the captured plans. Tune batch size and learning
-rate together, and compare validation metrics because larger batches mean
-fewer optimizer updates per epoch.
-
-Forward, backward, and optimizer elementwise expressions are captured together.
-`matmul()` and reductions remain native boundaries, with the supported
-elementwise work fused around them; the example's self-tests compare eager and
-compiled training steps and inspect the plan boundary counts.
-
-The core `CudaArray` API also includes shape views (`squeeze()`,
-`unsqueeze()`, `broadcastTo()`), elementwise bounds (`maximum()`, `minimum()`,
-`clamp()`), logical and statistical reductions (`all()`, `any()`, `var()`,
-`std()`), and `item()` for reading one value as a PHP scalar. `gather()` and
-`scatterAdd()` provide indexed reads and additive updates; they currently run
-eagerly rather than inside Fusion. See the root README for their dtype,
-broadcasting, and indexing requirements.
+| `08_gpu_classifier.php` | Neural Network Training | End-to-end MLP classifier, JIT kernel fusion, AdamW/SGD optimizers, dataset orchestration (MNIST/CSV). |
+| `11_benchmark_vs_zmatrix.php` | Backend Benchmark | Compares CUDA, ZMatrix and optionally the Transformer FFI runtime. |
 
 ## Execution Requirements
 
@@ -63,6 +26,24 @@ To run any example:
 ```bash
 php 01_basics_cuda_array.php
 ```
+
+The CUDA/ZMatrix comparison requires both extensions to be loaded:
+
+```bash
+php 11_benchmark_vs_zmatrix.php --size=1024 --warmup=5 --iterations=15
+```
+
+To include [Transformer](https://github.com/omegaalfa/Transformer), build it beside this project:
+
+```bash
+cd ../Transformer
+composer install
+cargo build --manifest-path runtime/Cargo.toml --release
+cd ../php-gpu-tensors
+php examples/11_benchmark_vs_zmatrix.php --transformer=../Transformer --size=1024 --warmup=5 --iterations=15
+```
+
+The script also accepts `TRANSFORMER_ROOT=/path/to/Transformer`. Transformer is measured on its CPU Tensor API; the CUDA and ZMatrix backends use the workloads `matmul` and `matmul + add` for a comparable result.
 
 ## Technical Notes
 ### Memory Lifecycle

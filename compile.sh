@@ -5,6 +5,8 @@ cd "$(dirname "$0")"
 PHP_BIN=${PHP_BIN:-php}
 PHPIZE=${PHPIZE:-phpize}
 PHP_CONFIG=${PHP_CONFIG:-php-config}
+# Make the native WSL CUDA tools visible even when WSL imports a Windows PATH.
+export PATH="/usr/local/cuda/bin:/usr/lib/wsl/lib:$PATH"
 INSTALL=0
 if [ "${1:-}" = "--install" ]; then
     INSTALL=1

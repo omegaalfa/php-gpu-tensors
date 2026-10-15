@@ -2,8 +2,6 @@
 #include "matmul_kernels.h"
 #include "backend_info.h"
 #include "reduction_ops.h"
-#include "indexed_ops.h"
-#include "concat_kernels.h"
 void fusion_cleanup_error(const char *operation, CUresult error)
 {
     if (error != CUDA_SUCCESS)
@@ -85,34 +83,18 @@ static int fusion_native_submit(fusion_plan *plan, fusion_step *step, tensor_t *
     fusion_node *node = item->tensor->fusion;
     tensor_t *a = values[item->a];
     tensor_t *b = item->b != SIZE_MAX ? values[item->b] : NULL;
-    tensor_t *c = item->c != SIZE_MAX ? values[item->c] : NULL;
     tensor_t *result = values[step->root];
-    int needs_b = node && (node->kind == FUSION_MATMUL ||
-        node->kind == FUSION_GATHER || node->kind == FUSION_SCATTER_ADD);
-    int needs_c = node && node->kind == FUSION_SCATTER_ADD;
-    if (!node || !result || !a || (needs_b && !b) || (needs_c && !c))
-    {
-        CUDA_THROW_RUNTIME("Fusion native step %zu has an unresolved input buffer (a=%zu, b=%zu, c=%zu)",
-                           step->root, item->a, item->b, item->c);
-        return 0;
-    }
     if (node->kind == FUSION_MATMUL)
     {
-        int ok = a->dtype == DTYPE_FLOAT32
-            ? (a->ndims == 2 && b->ndims == 2
-                ? cuda_matmul_launcher(a->data, b->data, result->data,
-                                      a->shape[0], a->shape[1], b->shape[1],
-                                      a->strides[0], a->strides[1], b->strides[0], b->strides[1],
-                                      result->strides[0], result->strides[1], (cudaStream_t)stream)
-                : cuda_batched_matmul_nd_launcher(a->data, b->data, result->data,
-                                                 a->shape, a->strides, a->ndims,
-                                                 b->shape, b->strides, b->ndims,
-                                                 result->shape, result->strides, result->ndims, (cudaStream_t)stream))
-            : cuda_low_precision_matmul_nd_launcher(a->data, b->data, result->data, a->dtype,
-                                                  a->shape, a->strides, a->ndims,
-                                                  b->shape, b->strides, b->ndims,
-                                                  result->shape, result->strides, result->ndims,
-                                                  (cudaStream_t)stream);
+        int ok = a->ndims == 2 && b->ndims == 2
+            ? cuda_matmul_launcher(a->data, b->data, result->data,
+                                  a->shape[0], a->shape[1], b->shape[1],
+                                  a->strides[0], a->strides[1], b->strides[0], b->strides[1],
+                                  result->strides[0], result->strides[1], (cudaStream_t)stream)
+            : cuda_batched_matmul_nd_launcher(a->data, b->data, result->data,
+                                             a->shape, a->strides, a->ndims,
+                                             b->shape, b->strides, b->ndims,
+                                             result->shape, result->strides, result->ndims, (cudaStream_t)stream);
         if (!ok)
         {
             cuda_backend_info info = {0};
@@ -123,60 +105,6 @@ static int fusion_native_submit(fusion_plan *plan, fusion_step *step, tensor_t *
         return 1;
     }
     int axis = node->parameter;
-    if (node->kind == FUSION_GATHER || node->kind == FUSION_SCATTER_ADD)
-    {
-        const char *operation = node->kind == FUSION_GATHER ? "gather" : "scatterAdd";
-        if (!cuda_tensor_validate_indexed_shapes(a, b, c, axis, operation))
-            return 0;
-
-        cudaError_t error = cuda_validate_indices(b->data, b->shape, b->strides,
-            b->ndims, axis, a->shape[axis], b->total_size);
-        if (error == cudaErrorInvalidValue)
-        {
-            CUDA_THROW_INVALID("%s indices must be within [0, %d)", operation, a->shape[axis]);
-            return 0;
-        }
-        if (error != cudaSuccess)
-        {
-            CUDA_THROW_RUNTIME("Failed to validate %s indices: %s",
-                               operation, cudaGetErrorString(error));
-            return 0;
-        }
-
-        if (node->kind == FUSION_GATHER)
-        {
-            error = cuda_launch_gather(a->data, b->data, result->data, a->dtype,
-                a->shape, a->strides, b->shape, b->strides,
-                a->ndims, axis, b->total_size);
-        }
-        else
-        {
-            error = cuda_launch_scatter_copy(a->data, result->data, a->dtype,
-                a->shape, a->strides, a->ndims, a->total_size);
-            if (error == cudaSuccess)
-                error = cuda_launch_scatter_add(b->data, c->data, result->data,
-                    a->dtype, b->shape, result->strides, b->strides,
-                    c->strides, a->ndims, axis, a->shape[axis], c->total_size);
-        }
-        if (error != cudaSuccess)
-        {
-            CUDA_THROW_RUNTIME("Fusion %s kernel failed: %s",
-                               operation, cudaGetErrorString(error));
-            return 0;
-        }
-        return 1;
-    }
-    if (node->kind == FUSION_CONCAT)
-    {
-        tensor_t *inputs[] = {a, b};
-        int input_count = b ? 2 : 1;
-        if (launch_concat_kernel_host(inputs, input_count, result, axis) != 0)
-        {
-            CUDA_THROW_RUNTIME("Fusion concat kernel failed");
-            return 0;
-        }
-        return 1;
-    }
     if (axis == -1 && a->total_size > INT_MAX)
     {
         CUDA_THROW_INVALID("Global fusion reduction exceeds INT_MAX elements");
@@ -213,17 +141,9 @@ static int fusion_alias_view(fusion_plan *plan, fusion_step *step, tensor_t **va
     tensor_t *tensor = plan->items[step->root].tensor;
     fusion_node *node = tensor->fusion;
     tensor_t *source = values[plan->items[step->root].a];
-    if (!source)
-    {
-        CUDA_THROW_RUNTIME("Fusion view step %zu has an unresolved source buffer",
-                           step->root);
-        return 0;
-    }
     size_t strides[MAX_DIMS];
     size_t offset = 0;
-    if (node->op == OP_BROADCAST)
-        memcpy(strides, tensor->strides, tensor->ndims * sizeof(size_t));
-    else if (node->op == OP_TRANSPOSE)
+    if (node->op == OP_TRANSPOSE)
         for (int d = 0; d < tensor->ndims; d++) strides[d] = source->strides[node->axes[d]];
     else if (node->op == OP_SLICE)
     {
@@ -252,55 +172,6 @@ static int fusion_alias_view(fusion_plan *plan, fusion_step *step, tensor_t **va
     return values[step->root] != NULL;
 }
 
-static int fusion_submit_stream_step(fusion_plan *plan, fusion_step *step,
-                                     tensor_t **values, CUstream stream)
-{
-    if (plan->items[step->root].alias)
-        return fusion_alias_view(plan, step, values);
-    if (!step->name[0])
-        return fusion_native_submit(plan, step, values, stream);
-
-    tensor_t *result = values[step->root];
-    if (!result)
-    {
-        CUDA_THROW_RUNTIME("Fusion kernel step %zu has no output buffer", step->root);
-        return 0;
-    }
-    if (!result->total_size) return 1;
-
-    void **args = step->arguments;
-    for (size_t j = 0; j < step->leaf_count; j++)
-    {
-        tensor_t *leaf = values[step->leaves[j]];
-        if (!leaf)
-        {
-            CUDA_THROW_RUNTIME("Fusion kernel step %zu has an unresolved input buffer", step->root);
-            return 0;
-        }
-        args[j] = &leaf->data;
-    }
-    for (size_t j = 0; j < step->root_count; j++)
-    {
-        tensor_t *root = values[step->roots[j]];
-        if (!root)
-        {
-            CUDA_THROW_RUNTIME("Fusion kernel step %zu has an unresolved output buffer", step->root);
-            return 0;
-        }
-        args[step->leaf_count + j] = &root->data;
-    }
-    size_t blocks = (result->total_size - 1) / 256 + 1;
-    if (blocks > 65535) blocks = 65535;
-    CUresult error = cuLaunchKernel(step->function, (unsigned int)blocks, 1, 1,
-                                    256, 1, 1, 0, stream, args, NULL);
-    if (error != CUDA_SUCCESS)
-    {
-        CUDA_THROW_RUNTIME("Fusion kernel submission failed (CUDA error %d)", error);
-        return 0;
-    }
-    return 1;
-}
-
 int fusion_enqueue(fusion_plan *plan, tensor_t **values, CUstream stream, fusion_buffer_mode mode)
 {
     if (!fusion_context_check(plan)) return 0;
@@ -311,128 +182,16 @@ int fusion_enqueue(fusion_plan *plan, tensor_t **values, CUstream stream, fusion
     }
     if (!fusion_prepare_buffers(plan, values, mode)) return 0;
     int pooled = mode == FUSION_BUFFERS_WORKSPACE;
-    int capture_native = plan->use_cuda_graph && plan->native_steps;
-    if (capture_native && !plan->graph_capture_stream)
-    {
-        CUresult create_error = cuStreamCreate(&plan->graph_capture_stream, CU_STREAM_NON_BLOCKING);
-        if (create_error != CUDA_SUCCESS)
-        {
-            CUDA_THROW_RUNTIME("Cannot create CUDA graph capture stream (CUDA error %d)", create_error);
-            return 0;
-        }
-    }
     CUevent ready = pooled ? plan->sync_ready : NULL;
     CUresult error = ready ? CUDA_SUCCESS : cuEventCreate(&ready, CU_EVENT_DISABLE_TIMING);
     if (pooled && error == CUDA_SUCCESS) plan->sync_ready = ready;
     if (error == CUDA_SUCCESS) error = cuEventRecord(ready, NULL);
     if (error == CUDA_SUCCESS) error = cuStreamWaitEvent(stream, ready, 0);
-    if (error == CUDA_SUCCESS && capture_native && !plan->native_warmed)
-        error = cuStreamWaitEvent(plan->graph_capture_stream, ready, 0);
     if (ready && !pooled) fusion_cleanup_error("Destroying readiness event", cuEventDestroy(ready));
     if (error != CUDA_SUCCESS)
     {
         CUDA_THROW_RUNTIME("Cannot order fusion stream after input work (CUDA error %d)", error);
         return 0;
-    }
-    if (capture_native)
-    {
-        CUstream capture_stream = plan->graph_capture_stream;
-        if (!plan->native_warmed)
-        {
-            for (size_t i = 0; i < plan->step_count; i++)
-            {
-                fusion_step *step = &plan->steps[i];
-                if (!fusion_submit_stream_step(plan, step, values, capture_stream))
-                    return 0;
-            }
-            error = cuStreamSynchronize(capture_stream);
-            plan->synchronizations++;
-            if (error != CUDA_SUCCESS)
-            {
-                CUDA_THROW_RUNTIME("CUDA graph native warmup failed (CUDA error %d)", error);
-                return 0;
-            }
-            plan->native_warmed = 1;
-            for (size_t i = 0; i < plan->step_count; i++)
-            {
-                fusion_step *step = &plan->steps[i];
-                if (plan->items[step->root].alias && values[step->root])
-                {
-                    cuda_tensor_destroy(values[step->root]);
-                    values[step->root] = NULL;
-                }
-            }
-        }
-
-        error = cuStreamBeginCapture(capture_stream, CU_STREAM_CAPTURE_MODE_THREAD_LOCAL);
-        if (error != CUDA_SUCCESS)
-        {
-            CUDA_THROW_RUNTIME("Cannot begin CUDA graph stream capture (CUDA error %d)", error);
-            return 0;
-        }
-        int capture_ok = 1;
-        for (size_t i = 0; i < plan->step_count; i++)
-        {
-            fusion_step *step = &plan->steps[i];
-            if (!fusion_submit_stream_step(plan, step, values, capture_stream))
-            {
-                capture_ok = 0;
-                break;
-            }
-        }
-
-        CUgraph captured_graph = NULL;
-        CUresult end_error = cuStreamEndCapture(capture_stream, &captured_graph);
-        if (!capture_ok)
-        {
-            if (captured_graph) fusion_cleanup_error("Destroying failed captured graph", cuGraphDestroy(captured_graph));
-            return 0;
-        }
-        if (end_error != CUDA_SUCCESS || !captured_graph)
-        {
-            if (captured_graph) fusion_cleanup_error("Destroying invalid captured graph", cuGraphDestroy(captured_graph));
-            CUDA_THROW_RUNTIME("Cannot end CUDA graph stream capture (CUDA error %d)", end_error);
-            return 0;
-        }
-
-        if (!plan->graph_exec)
-        {
-#if CUDA_VERSION >= 11040
-            error = cuGraphInstantiateWithFlags(&plan->graph_exec, captured_graph, 0);
-#else
-            error = cuGraphInstantiate(&plan->graph_exec, captured_graph, NULL, NULL, 0);
-#endif
-            if (error != CUDA_SUCCESS)
-            {
-                fusion_cleanup_error("Destroying uninstantiated captured graph", cuGraphDestroy(captured_graph));
-                CUDA_THROW_RUNTIME("Cannot instantiate CUDA graph with native operations (CUDA error %d)", error);
-                return 0;
-            }
-            plan->cuda_graph = captured_graph;
-        }
-        else
-        {
-            CUgraphExecUpdateResultInfo update_info = {};
-            error = cuGraphExecUpdate(plan->graph_exec, captured_graph, &update_info);
-            if (error != CUDA_SUCCESS)
-            {
-                fusion_cleanup_error("Destroying incompatible captured graph", cuGraphDestroy(captured_graph));
-                CUDA_THROW_RUNTIME("Cannot update CUDA graph with native operations (CUDA error %d, update result %d)",
-                                   error, (int)update_info.result);
-                return 0;
-            }
-            if (plan->cuda_graph)
-                fusion_cleanup_error("Destroying previous captured graph", cuGraphDestroy(plan->cuda_graph));
-            plan->cuda_graph = captured_graph;
-        }
-        error = cuGraphLaunch(plan->graph_exec, stream);
-        if (error != CUDA_SUCCESS)
-        {
-            CUDA_THROW_RUNTIME("CUDA graph with native operations failed to launch (CUDA error %d)", error);
-            return 0;
-        }
-        plan->graph_launches++;
-        return 1;
     }
     int constructing = plan->use_cuda_graph && !plan->graph_exec;
     if (constructing)
@@ -624,13 +383,9 @@ int fusion_execute(fusion_plan *plan, tensor_t **values)
                 case FUSION_ARG_REDUCE: result = cuda_tensor_reduce_arg(a, axis, node->op); break;
                 case FUSION_MATMUL: result = cuda_tensor_matmul(a, b); break;
                 case FUSION_VIEW:
-                    if (node->op == OP_RESHAPE)
-                        result = cuda_tensor_reshape(a, tensor->shape, tensor->ndims);
-                    else if (node->op == OP_BROADCAST)
-                        result = cuda_tensor_create_view(a, tensor->shape, tensor->strides,
-                                                         tensor->ndims, 0, tensor->total_size);
-                    else
-                        result = cuda_tensor_transpose(a, node->axes, tensor->ndims);
+                    result = node->op == OP_RESHAPE
+                        ? cuda_tensor_reshape(a, tensor->shape, tensor->ndims)
+                        : cuda_tensor_transpose(a, node->axes, tensor->ndims);
                     break;
                 default: ZEND_ASSERT(0);
             }

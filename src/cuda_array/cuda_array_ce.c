@@ -15,9 +15,6 @@
 #include "tensor_import.h"
 #include "tensor_where.h"
 #include "fusion.h"
-#include "autograd.h"
-#include <math.h>
-#include <limits.h>
 
 zend_class_entry *cuda_array_ce;
 static zend_object_handlers cuda_array_handlers;
@@ -38,24 +35,8 @@ static void rand_tensor_creator(INTERNAL_FUNCTION_PARAMETERS, unsigned long long
 static void reduction_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char *operation_name, operation_type_t operation_type, int return_arg);
 static void unary_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char *operation_name, operation_type_t operation_type);
 static void binary_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char *operation_name, operation_type_t operation_type);
-static tensor_t *cuda_array_public_reduce(tensor_t *input, int axis, operation_type_t operation_type);
-static int cuda_array_parse_axis(tensor_t *input, zval *axis_value, int allow_global, int *axis);
 
 static void sync_php_object_shape(cuda_array_obj *obj, tensor_t *tensor);
-
-static tensor_t *cuda_array_make_shape_view(tensor_t *input, const int *shape,
-                                            const size_t *strides, int ndims)
-{
-    if (fusion_active())
-        return fusion_view(input, OP_BROADCAST, (int *)shape, (size_t *)strides, ndims, NULL);
-    if (!fusion_materialize(input))
-        return NULL;
-    tensor_t *view = cuda_tensor_create_view(input, (int *)shape, (size_t *)strides,
-                                             ndims, 0, input->total_size);
-    if (view)
-        autograd_record_view(view, input, OP_BROADCAST, NULL);
-    return view;
-}
 
 static dtype_t parse_dtype_param(zend_string *dtype_str)
 {
@@ -405,73 +386,6 @@ ZEND_METHOD(CudaArray, subtract)
     binary_operation_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU, "Subtraction", OP_SUB);
 }
 
-ZEND_METHOD(CudaArray, maximum)
-{
-    binary_operation_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU, "Elementwise maximum", OP_MAXIMUM);
-}
-
-ZEND_METHOD(CudaArray, minimum)
-{
-    binary_operation_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU, "Elementwise minimum", OP_MINIMUM);
-}
-
-ZEND_METHOD(CudaArray, clamp)
-{
-    zval *minimum = NULL;
-    zval *maximum = NULL;
-    ZEND_PARSE_PARAMETERS_START(0, 2)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL_OR_NULL(minimum)
-        Z_PARAM_ZVAL_OR_NULL(maximum)
-    ZEND_PARSE_PARAMETERS_END();
-
-    if ((!minimum || Z_TYPE_P(minimum) == IS_NULL) &&
-        (!maximum || Z_TYPE_P(maximum) == IS_NULL))
-    {
-        CUDA_THROW_INVALID("clamp requires at least one bound");
-        RETURN_THROWS();
-    }
-    if ((minimum && Z_TYPE_P(minimum) != IS_NULL &&
-         Z_TYPE_P(minimum) != IS_LONG && Z_TYPE_P(minimum) != IS_DOUBLE) ||
-        (maximum && Z_TYPE_P(maximum) != IS_NULL &&
-         Z_TYPE_P(maximum) != IS_LONG && Z_TYPE_P(maximum) != IS_DOUBLE))
-    {
-        CUDA_THROW_INVALID("clamp bounds must be integers, floats, or null");
-        RETURN_THROWS();
-    }
-    if (minimum && maximum && Z_TYPE_P(minimum) != IS_NULL &&
-        Z_TYPE_P(maximum) != IS_NULL &&
-        zval_get_double(minimum) > zval_get_double(maximum))
-    {
-        CUDA_THROW_INVALID("clamp minimum cannot exceed maximum");
-        RETURN_THROWS();
-    }
-
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    tensor_t *result = object->tensor_handle;
-    result->ref_count++;
-    if (minimum && Z_TYPE_P(minimum) != IS_NULL)
-    {
-        scalar_value_t value;
-        SCALAR_FROM_ZVAL(minimum, value);
-        tensor_t *clamped = cuda_scalar_op(result, value, OP_MAXIMUM);
-        cuda_tensor_destroy(result);
-        if (!clamped) RETURN_THROWS();
-        result = clamped;
-    }
-    if (maximum && Z_TYPE_P(maximum) != IS_NULL)
-    {
-        scalar_value_t value;
-        SCALAR_FROM_ZVAL(maximum, value);
-        tensor_t *clamped = cuda_scalar_op(result, value, OP_MINIMUM);
-        cuda_tensor_destroy(result);
-        if (!clamped) RETURN_THROWS();
-        result = clamped;
-    }
-    create_result_object(return_value, result);
-}
-
 ZEND_METHOD(CudaArray, power)
 {
     binary_operation_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU, "Power", OP_POW);
@@ -756,708 +670,6 @@ ZEND_METHOD(CudaArray, argMin)
     reduction_operation_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU, "ArgMin Reduction", OP_ARG_MIN, 1);
 }
 
-ZEND_METHOD(CudaArray, all)
-{
-    zval *axis_value = NULL;
-    ZEND_PARSE_PARAMETERS_START(0, 1)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL(axis_value)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    int axis;
-    if (!cuda_array_parse_axis(object->tensor_handle, axis_value, 1, &axis))
-        RETURN_THROWS();
-    tensor_t *result = cuda_array_public_reduce(object->tensor_handle, axis, OP_REDUCE_ALL);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-ZEND_METHOD(CudaArray, any)
-{
-    zval *axis_value = NULL;
-    ZEND_PARSE_PARAMETERS_START(0, 1)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL(axis_value)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    int axis;
-    if (!cuda_array_parse_axis(object->tensor_handle, axis_value, 1, &axis))
-        RETURN_THROWS();
-    tensor_t *result = cuda_array_public_reduce(object->tensor_handle, axis, OP_REDUCE_ANY);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-static tensor_t *cuda_array_variance(tensor_t *input, int axis, zend_long correction,
-                                     int standard_deviation)
-{
-    size_t count = axis == REDUCE_GLOBAL_FLAG
-        ? input->total_size : (size_t)input->shape[axis];
-    if (correction < 0 || (size_t)correction >= count)
-    {
-        CUDA_THROW_INVALID("Variance correction must be non-negative and smaller than the reduced dimension");
-        return NULL;
-    }
-    if (!fusion_active() && !input->requires_grad &&
-        (axis != REDUCE_GLOBAL_FLAG || input->total_size <= INT_MAX))
-        return cuda_tensor_moments_reduce(input, axis, (int)correction, standard_deviation);
-
-    tensor_t *mean = cuda_array_public_reduce(input, axis, OP_REDUCE_MEAN);
-    if (!mean) return NULL;
-    tensor_t *expanded = mean;
-    if (axis != REDUCE_GLOBAL_FLAG)
-    {
-        int shape[MAX_DIMS];
-        memcpy(shape, input->shape, input->ndims * sizeof(int));
-        shape[axis] = 1;
-        expanded = cuda_tensor_reshape(mean, shape, input->ndims);
-        cuda_tensor_destroy(mean);
-        if (!expanded) return NULL;
-    }
-    tensor_t *centered = cuda_tensor_op(input, expanded, OP_SUB);
-    cuda_tensor_destroy(expanded);
-    if (!centered) return NULL;
-    tensor_t *squared = cuda_tensor_op(centered, centered, OP_MUL);
-    cuda_tensor_destroy(centered);
-    if (!squared) return NULL;
-    tensor_t *variance = cuda_array_public_reduce(squared, axis, OP_REDUCE_MEAN);
-    cuda_tensor_destroy(squared);
-    if (!variance || correction == 0)
-    {
-        if (!standard_deviation) return variance;
-    }
-    else
-    {
-        scalar_value_t factor = {0};
-        factor.dtype = variance->dtype;
-        double scale = (double)count / (double)(count - (size_t)correction);
-        if (factor.dtype == DTYPE_FLOAT64) factor.v.f64 = scale;
-        else factor.v.f32 = (float)scale;
-        tensor_t *corrected = cuda_scalar_op(variance, factor, OP_MUL);
-        cuda_tensor_destroy(variance);
-        variance = corrected;
-    }
-    if (!variance || !standard_deviation) return variance;
-
-    tensor_t *result = cuda_unary_op(variance, OP_SQRT);
-    cuda_tensor_destroy(variance);
-    return result;
-}
-
-ZEND_METHOD(CudaArray, var)
-{
-    zval *axis_value = NULL;
-    zend_long correction = 0;
-    ZEND_PARSE_PARAMETERS_START(0, 2)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL(axis_value)
-        Z_PARAM_LONG(correction)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    int axis;
-    if (!cuda_array_parse_axis(object->tensor_handle, axis_value, 1, &axis))
-        RETURN_THROWS();
-    tensor_t *result = cuda_array_variance(object->tensor_handle, axis, correction, 0);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-ZEND_METHOD(CudaArray, std)
-{
-    zval *axis_value = NULL;
-    zend_long correction = 0;
-    ZEND_PARSE_PARAMETERS_START(0, 2)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL(axis_value)
-        Z_PARAM_LONG(correction)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    int axis;
-    if (!cuda_array_parse_axis(object->tensor_handle, axis_value, 1, &axis))
-        RETURN_THROWS();
-    tensor_t *result = cuda_array_variance(object->tensor_handle, axis, correction, 1);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-static tensor_t *cuda_array_softmax(tensor_t *input, int axis)
-{
-    dtype_t output_dtype = input->dtype == DTYPE_FLOAT64 ||
-                                   dtype_is_integer(input->dtype) ||
-                                   input->dtype == DTYPE_BOOL
-                               ? DTYPE_FLOAT64
-                               : DTYPE_FLOAT32;
-    tensor_t *working = tensor_cast(input, output_dtype);
-    if (!working)
-        return NULL;
-
-    tensor_t *maximum = cuda_tensor_reduce(working, axis, OP_REDUCE_MAX);
-    if (!maximum)
-    {
-        cuda_tensor_destroy(working);
-        return NULL;
-    }
-
-    int expanded_shape[MAX_DIMS];
-    memcpy(expanded_shape, input->shape, input->ndims * sizeof(int));
-    expanded_shape[axis] = 1;
-    tensor_t *expanded_maximum = cuda_tensor_reshape(maximum, expanded_shape, input->ndims);
-    cuda_tensor_destroy(maximum);
-    if (!expanded_maximum)
-    {
-        cuda_tensor_destroy(working);
-        return NULL;
-    }
-
-    tensor_t *shifted = cuda_tensor_op(working, expanded_maximum, OP_SUB);
-    cuda_tensor_destroy(expanded_maximum);
-    cuda_tensor_destroy(working);
-    if (!shifted)
-        return NULL;
-
-    tensor_t *exponentials = cuda_unary_op(shifted, OP_EXP);
-    cuda_tensor_destroy(shifted);
-    if (!exponentials)
-        return NULL;
-
-    tensor_t *normalizer = cuda_tensor_reduce(exponentials, axis, OP_REDUCE_SUM);
-    if (!normalizer)
-    {
-        cuda_tensor_destroy(exponentials);
-        return NULL;
-    }
-
-    tensor_t *expanded_normalizer = cuda_tensor_reshape(normalizer, expanded_shape, input->ndims);
-    cuda_tensor_destroy(normalizer);
-    if (!expanded_normalizer)
-    {
-        cuda_tensor_destroy(exponentials);
-        return NULL;
-    }
-
-    tensor_t *result = cuda_tensor_op(exponentials, expanded_normalizer, OP_DIV);
-    cuda_tensor_destroy(expanded_normalizer);
-    cuda_tensor_destroy(exponentials);
-    return result;
-}
-
-ZEND_METHOD(CudaArray, softmax)
-{
-    zend_long requested_axis = -1;
-    ZEND_PARSE_PARAMETERS_START(0, 1)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_LONG(requested_axis)
-    ZEND_PARSE_PARAMETERS_END();
-
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object)
-        RETURN_THROWS();
-
-    if (requested_axis < INT_MIN || requested_axis > INT_MAX)
-    {
-        CUDA_THROW_INVALID("Softmax axis is outside the supported integer range");
-        RETURN_THROWS();
-    }
-
-    int axis = (int)requested_axis;
-    if (axis < 0)
-        axis += object->tensor_handle->ndims;
-    if (axis < 0 || axis >= object->tensor_handle->ndims)
-    {
-        CUDA_THROW_INVALID("Softmax axis is out of range for tensor rank %d",
-                           object->tensor_handle->ndims);
-        RETURN_THROWS();
-    }
-
-    tensor_t *result = cuda_array_softmax(object->tensor_handle, axis);
-    if (!result)
-        RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-static int cuda_array_parse_normalized_axes(tensor_t *input, zval *axes_value,
-                                           int *axes, int *axis_count)
-{
-    uint32_t count = zend_hash_num_elements(Z_ARRVAL_P(axes_value));
-    if (!count || count > (uint32_t)input->ndims || count > MAX_DIMS)
-    {
-        CUDA_THROW_INVALID("LayerNorm requires a non-empty list of distinct axes");
-        return 0;
-    }
-
-    int seen[MAX_DIMS] = {0};
-    int index = 0;
-    zval *axis_value;
-    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(axes_value), axis_value)
-    {
-        if (Z_TYPE_P(axis_value) != IS_LONG)
-        {
-            CUDA_THROW_INVALID("LayerNorm axes must be integers");
-            return 0;
-        }
-
-        zend_long requested = Z_LVAL_P(axis_value);
-        if (requested < INT_MIN || requested > INT_MAX)
-        {
-            CUDA_THROW_INVALID("LayerNorm axis is outside the supported integer range");
-            return 0;
-        }
-
-        int axis = (int)requested;
-        if (axis < 0)
-            axis += input->ndims;
-        if (axis < 0 || axis >= input->ndims)
-        {
-            CUDA_THROW_INVALID("LayerNorm axis is out of range for tensor rank %d",
-                               input->ndims);
-            return 0;
-        }
-        if (seen[axis])
-        {
-            CUDA_THROW_INVALID("LayerNorm axes must not contain duplicates");
-            return 0;
-        }
-
-        seen[axis] = 1;
-        axes[index++] = axis;
-    }
-    ZEND_HASH_FOREACH_END();
-
-    *axis_count = index;
-    return 1;
-}
-
-static tensor_t *cuda_array_reduce_axes_keepdims(tensor_t *input,
-                                                 const int *axes, int axis_count)
-{
-    tensor_t *current = input;
-    current->ref_count++;
-    int shape[MAX_DIMS];
-    memcpy(shape, input->shape, input->ndims * sizeof(int));
-
-    for (int i = 0; i < axis_count; i++)
-    {
-        tensor_t *reduced = cuda_tensor_reduce(current, axes[i], OP_REDUCE_MEAN);
-        cuda_tensor_destroy(current);
-        if (!reduced)
-            return NULL;
-
-        shape[axes[i]] = 1;
-        current = cuda_tensor_reshape(reduced, shape, input->ndims);
-        cuda_tensor_destroy(reduced);
-        if (!current)
-            return NULL;
-    }
-
-    return current;
-}
-
-static tensor_t *cuda_array_layernorm_reshape_view(tensor_t *input,
-                                                   const int *shape,
-                                                   const size_t *strides,
-                                                   int ndims)
-{
-    if (fusion_active())
-        return fusion_view(input, OP_RESHAPE, (int *)shape, (size_t *)strides, ndims, NULL);
-    if (!fusion_materialize(input))
-        return NULL;
-
-    tensor_t *view = cuda_tensor_create_view(input, (int *)shape, (size_t *)strides,
-                                             ndims, 0, input->total_size);
-    if (view)
-        autograd_record_view(view, input, OP_RESHAPE, NULL);
-    return view;
-}
-
-static int cuda_array_validate_layernorm_parameter(tensor_t *parameter,
-                                                   tensor_t *input,
-                                                   const int *axes,
-                                                   int axis_count,
-                                                   const char *name)
-{
-    if (!dtype_is_floating(parameter->dtype))
-    {
-        CUDA_THROW_INVALID("LayerNorm %s must have a floating-point dtype", name);
-        return 0;
-    }
-    if (parameter->ndims != axis_count)
-    {
-        CUDA_THROW_INVALID("LayerNorm %s rank must match the number of normalized axes", name);
-        return 0;
-    }
-    for (int i = 0; i < axis_count; i++)
-        if (parameter->shape[i] != input->shape[axes[i]])
-        {
-            CUDA_THROW_INVALID("LayerNorm %s shape does not match the normalized dimensions",
-                               name);
-            return 0;
-        }
-    return 1;
-}
-
-static tensor_t *cuda_array_layernorm_parameter(tensor_t *parameter,
-                                                tensor_t *input,
-                                                const int *axes,
-                                                int axis_count,
-                                                dtype_t dtype)
-{
-    tensor_t *casted = tensor_cast(parameter, dtype);
-    if (!casted)
-        return NULL;
-
-    int sorted_axes[MAX_DIMS];
-    int permutation[MAX_DIMS];
-    for (int i = 0; i < axis_count; i++)
-    {
-        sorted_axes[i] = axes[i];
-        permutation[i] = i;
-    }
-    for (int i = 1; i < axis_count; i++)
-        for (int j = i; j > 0 && sorted_axes[j] < sorted_axes[j - 1]; j--)
-        {
-            int axis = sorted_axes[j];
-            sorted_axes[j] = sorted_axes[j - 1];
-            sorted_axes[j - 1] = axis;
-            int source = permutation[j];
-            permutation[j] = permutation[j - 1];
-            permutation[j - 1] = source;
-        }
-
-    int needs_transpose = 0;
-    for (int i = 0; i < axis_count; i++)
-        if (permutation[i] != i)
-            needs_transpose = 1;
-
-    tensor_t *ordered = casted;
-    if (needs_transpose)
-    {
-        ordered = cuda_tensor_transpose(casted, permutation, axis_count);
-        cuda_tensor_destroy(casted);
-        if (!ordered)
-            return NULL;
-    }
-
-    int expanded_shape[MAX_DIMS];
-    size_t expanded_strides[MAX_DIMS] = {0};
-    for (int i = 0; i < input->ndims; i++)
-        expanded_shape[i] = 1;
-    for (int i = 0; i < axis_count; i++)
-    {
-        expanded_shape[sorted_axes[i]] = ordered->shape[i];
-        expanded_strides[sorted_axes[i]] = ordered->strides[i];
-    }
-
-    tensor_t *expanded = cuda_array_layernorm_reshape_view(
-        ordered, expanded_shape, expanded_strides, input->ndims);
-    cuda_tensor_destroy(ordered);
-    return expanded;
-}
-
-static tensor_t *cuda_array_layernorm(tensor_t *input, const int *axes,
-                                     int axis_count, double epsilon,
-                                     tensor_t *scale, tensor_t *bias)
-{
-    if (!isfinite(epsilon) || epsilon <= 0.0)
-    {
-        CUDA_THROW_INVALID("LayerNorm epsilon must be finite and greater than zero");
-        return NULL;
-    }
-    for (int i = 0; i < axis_count; i++)
-        if (!input->shape[axes[i]])
-        {
-            CUDA_THROW_INVALID("LayerNorm cannot normalize an empty dimension");
-            return NULL;
-        }
-
-    if ((scale && !cuda_array_validate_layernorm_parameter(
-                      scale, input, axes, axis_count, "scale")) ||
-        (bias && !cuda_array_validate_layernorm_parameter(
-                     bias, input, axes, axis_count, "bias")))
-        return NULL;
-
-    dtype_t dtype = input->dtype == DTYPE_FLOAT64 || !dtype_is_floating(input->dtype)
-        ? DTYPE_FLOAT64 : DTYPE_FLOAT32;
-    if ((scale && scale->dtype == DTYPE_FLOAT64) ||
-        (bias && bias->dtype == DTYPE_FLOAT64))
-        dtype = DTYPE_FLOAT64;
-    if (dtype == DTYPE_FLOAT32 &&
-        (!isfinite((float)epsilon) || (float)epsilon <= 0.0f))
-    {
-        CUDA_THROW_INVALID("LayerNorm epsilon is not representable as float32");
-        return NULL;
-    }
-
-    tensor_t *scale_view = scale
-        ? cuda_array_layernorm_parameter(scale, input, axes, axis_count, dtype)
-        : NULL;
-    if (scale && !scale_view)
-        return NULL;
-    tensor_t *bias_view = bias
-        ? cuda_array_layernorm_parameter(bias, input, axes, axis_count, dtype)
-        : NULL;
-    if (bias && !bias_view)
-    {
-        if (scale_view) cuda_tensor_destroy(scale_view);
-        return NULL;
-    }
-
-    tensor_t *working = tensor_cast(input, dtype);
-    tensor_t *mean = NULL;
-    tensor_t *centered = NULL;
-    tensor_t *squared = NULL;
-    tensor_t *variance = NULL;
-    tensor_t *stabilized = NULL;
-    tensor_t *deviation = NULL;
-    tensor_t *normalized = NULL;
-    tensor_t *adjusted = NULL;
-    tensor_t *result = NULL;
-    if (!working)
-        goto cleanup;
-
-    mean = cuda_array_reduce_axes_keepdims(working, axes, axis_count);
-    if (!mean)
-        goto cleanup;
-    centered = cuda_tensor_op(working, mean, OP_SUB);
-    if (!centered)
-        goto cleanup;
-    squared = cuda_tensor_op(centered, centered, OP_MUL);
-    if (!squared)
-        goto cleanup;
-    variance = cuda_array_reduce_axes_keepdims(squared, axes, axis_count);
-    if (!variance)
-        goto cleanup;
-
-    scalar_value_t epsilon_value = {0};
-    epsilon_value.dtype = dtype;
-    if (dtype == DTYPE_FLOAT64)
-        epsilon_value.v.f64 = epsilon;
-    else
-        epsilon_value.v.f32 = (float)epsilon;
-    stabilized = cuda_scalar_op(variance, epsilon_value, OP_ADD);
-    if (!stabilized)
-        goto cleanup;
-    deviation = cuda_unary_op(stabilized, OP_SQRT);
-    if (!deviation)
-        goto cleanup;
-    normalized = cuda_tensor_op(centered, deviation, OP_DIV);
-    if (!normalized)
-        goto cleanup;
-
-    if (scale_view)
-    {
-        adjusted = cuda_tensor_op(normalized, scale_view, OP_MUL);
-        if (!adjusted)
-            goto cleanup;
-        cuda_tensor_destroy(normalized);
-        normalized = adjusted;
-        adjusted = NULL;
-    }
-    if (bias_view)
-    {
-        adjusted = cuda_tensor_op(normalized, bias_view, OP_ADD);
-        if (!adjusted)
-            goto cleanup;
-        cuda_tensor_destroy(normalized);
-        normalized = adjusted;
-        adjusted = NULL;
-    }
-    result = normalized;
-    normalized = NULL;
-
-cleanup:
-    if (scale_view) cuda_tensor_destroy(scale_view);
-    if (bias_view) cuda_tensor_destroy(bias_view);
-    if (working) cuda_tensor_destroy(working);
-    if (mean) cuda_tensor_destroy(mean);
-    if (centered) cuda_tensor_destroy(centered);
-    if (squared) cuda_tensor_destroy(squared);
-    if (variance) cuda_tensor_destroy(variance);
-    if (stabilized) cuda_tensor_destroy(stabilized);
-    if (deviation) cuda_tensor_destroy(deviation);
-    if (normalized) cuda_tensor_destroy(normalized);
-    if (adjusted) cuda_tensor_destroy(adjusted);
-    return result;
-}
-
-ZEND_METHOD(CudaArray, layerNorm)
-{
-    zval *axes_value, *scale_value = NULL, *bias_value = NULL;
-    double epsilon = 1e-5;
-    ZEND_PARSE_PARAMETERS_START(1, 4)
-        Z_PARAM_ARRAY(axes_value)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_DOUBLE(epsilon)
-        Z_PARAM_OBJECT_OF_CLASS_OR_NULL(scale_value, cuda_array_ce)
-        Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bias_value, cuda_array_ce)
-    ZEND_PARSE_PARAMETERS_END();
-
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object)
-        RETURN_THROWS();
-
-    int axes[MAX_DIMS];
-    int axis_count = 0;
-    if (!cuda_array_parse_normalized_axes(object->tensor_handle, axes_value,
-                                          axes, &axis_count))
-        RETURN_THROWS();
-
-    tensor_t *scale = NULL;
-    tensor_t *bias = NULL;
-    if (scale_value)
-    {
-        cuda_array_obj *scale_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(scale_value));
-        if (!scale_object)
-            RETURN_THROWS();
-        scale = scale_object->tensor_handle;
-    }
-    if (bias_value)
-    {
-        cuda_array_obj *bias_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(bias_value));
-        if (!bias_object)
-            RETURN_THROWS();
-        bias = bias_object->tensor_handle;
-    }
-
-    tensor_t *result = cuda_array_layernorm(object->tensor_handle, axes, axis_count,
-                                            epsilon, scale, bias);
-    if (!result)
-        RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-ZEND_METHOD(CudaArray, item)
-{
-    ZEND_PARSE_PARAMETERS_NONE();
-    cuda_array_obj *object = php_cuda_array_fetch_valid_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    tensor_t *tensor = object->tensor_handle;
-    if (tensor->total_size != 1)
-    {
-        CUDA_THROW_INVALID("item() requires a tensor containing exactly one element");
-        RETURN_THROWS();
-    }
-    zend_string *bytes = tensor_to_buffer(tensor);
-    if (!bytes) RETURN_THROWS();
-    const char *data = ZSTR_VAL(bytes);
-    switch (tensor->dtype)
-    {
-        case DTYPE_FLOAT32:
-        {
-            float value;
-            memcpy(&value, data, sizeof(value));
-            ZVAL_DOUBLE(return_value, value);
-            break;
-        }
-        case DTYPE_FLOAT64:
-        {
-            double value;
-            memcpy(&value, data, sizeof(value));
-            ZVAL_DOUBLE(return_value, value);
-            break;
-        }
-        case DTYPE_INT8: { int8_t value; memcpy(&value, data, sizeof(value)); ZVAL_LONG(return_value, value); break; }
-        case DTYPE_INT16: { int16_t value; memcpy(&value, data, sizeof(value)); ZVAL_LONG(return_value, value); break; }
-        case DTYPE_INT32: { int32_t value; memcpy(&value, data, sizeof(value)); ZVAL_LONG(return_value, value); break; }
-        case DTYPE_INT64:
-        {
-            int64_t value;
-            memcpy(&value, data, sizeof(value));
-            if (value < ZEND_LONG_MIN || value > ZEND_LONG_MAX) ZVAL_DOUBLE(return_value, (double)value);
-            else ZVAL_LONG(return_value, (zend_long)value);
-            break;
-        }
-        case DTYPE_UINT8: { uint8_t value; memcpy(&value, data, sizeof(value)); ZVAL_LONG(return_value, value); break; }
-        case DTYPE_UINT16: { uint16_t value; memcpy(&value, data, sizeof(value)); ZVAL_LONG(return_value, value); break; }
-        case DTYPE_UINT32: { uint32_t value; memcpy(&value, data, sizeof(value)); ZVAL_LONG(return_value, value); break; }
-        case DTYPE_UINT64:
-        {
-            uint64_t value;
-            memcpy(&value, data, sizeof(value));
-            if (value > (uint64_t)ZEND_LONG_MAX) ZVAL_DOUBLE(return_value, (double)value);
-            else ZVAL_LONG(return_value, (zend_long)value);
-            break;
-        }
-        case DTYPE_BOOL:
-        {
-            bool value;
-            memcpy(&value, data, sizeof(value));
-            ZVAL_BOOL(return_value, value);
-            break;
-        }
-        default:
-            zend_string_release(bytes);
-            CUDA_THROW_INVALID("item() is not supported for dtype %s", dtype_to_string(tensor->dtype));
-            RETURN_THROWS();
-    }
-    zend_string_release(bytes);
-}
-
-static int cuda_array_index_axis(tensor_t *input, zend_long requested, int *axis)
-{
-    if (requested < INT_MIN || requested > INT_MAX)
-    {
-        CUDA_THROW_INVALID("Indexed operation axis is outside the supported integer range");
-        return 0;
-    }
-    int normalized = (int)requested;
-    if (normalized < 0) normalized += input->ndims;
-    if (normalized < 0 || normalized >= input->ndims)
-    {
-        CUDA_THROW_INVALID("Indexed operation axis is out of range for tensor rank %d", input->ndims);
-        return 0;
-    }
-    *axis = normalized;
-    return 1;
-}
-
-ZEND_METHOD(CudaArray, gather)
-{
-    zval *indices_value;
-    zend_long requested_axis = 0;
-    ZEND_PARSE_PARAMETERS_START(1, 2)
-        Z_PARAM_OBJECT_OF_CLASS(indices_value, cuda_array_ce)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_LONG(requested_axis)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *input_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    cuda_array_obj *indices_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(indices_value));
-    if (!input_object || !indices_object) RETURN_THROWS();
-    int axis;
-    if (!cuda_array_index_axis(input_object->tensor_handle, requested_axis, &axis))
-        RETURN_THROWS();
-    tensor_t *result = cuda_tensor_gather(input_object->tensor_handle,
-                                          indices_object->tensor_handle, axis);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-ZEND_METHOD(CudaArray, scatterAdd)
-{
-    zval *indices_value, *updates_value;
-    zend_long requested_axis = 0;
-    ZEND_PARSE_PARAMETERS_START(2, 3)
-        Z_PARAM_OBJECT_OF_CLASS(indices_value, cuda_array_ce)
-        Z_PARAM_OBJECT_OF_CLASS(updates_value, cuda_array_ce)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_LONG(requested_axis)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *input_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    cuda_array_obj *indices_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(indices_value));
-    cuda_array_obj *updates_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(updates_value));
-    if (!input_object || !indices_object || !updates_object) RETURN_THROWS();
-    int axis;
-    if (!cuda_array_index_axis(input_object->tensor_handle, requested_axis, &axis))
-        RETURN_THROWS();
-    tensor_t *result = cuda_tensor_scatter_add(input_object->tensor_handle,
-        indices_object->tensor_handle, updates_object->tensor_handle, axis);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
 ZEND_METHOD(CudaArray, full)
 {
     zval *shape_array;
@@ -1557,87 +769,6 @@ ZEND_METHOD(CudaArray, dtype)
     RETURN_STRING(dtype_name);
 }
 
-ZEND_METHOD(CudaArray, requiresGrad)
-{
-    zend_bool requires_grad = 1;
-    ZEND_PARSE_PARAMETERS_START(0, 1)
-    Z_PARAM_OPTIONAL
-    Z_PARAM_BOOL(requires_grad)
-    ZEND_PARSE_PARAMETERS_END();
-
-    cuda_array_obj *obj = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!obj) RETURN_THROWS();
-    if (!autograd_set_requires_grad(obj->tensor_handle, requires_grad))
-        RETURN_THROWS();
-    RETURN_OBJ_COPY(Z_OBJ_P(ZEND_THIS));
-}
-
-ZEND_METHOD(CudaArray, backward)
-{
-    zval *gradient_value = NULL;
-    zend_bool retain_graph = 0;
-    ZEND_PARSE_PARAMETERS_START(0, 2)
-    Z_PARAM_OPTIONAL
-    Z_PARAM_OBJECT_OF_CLASS_OR_NULL(gradient_value, cuda_array_ce)
-    Z_PARAM_BOOL(retain_graph)
-    ZEND_PARSE_PARAMETERS_END();
-
-    cuda_array_obj *obj = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!obj) RETURN_THROWS();
-    tensor_t *gradient = NULL;
-    if (gradient_value && Z_TYPE_P(gradient_value) == IS_OBJECT)
-    {
-        cuda_array_obj *gradient_obj = fusion_active()
-            ? php_cuda_array_fetch_deferred_object(Z_OBJ_P(gradient_value))
-            : php_cuda_array_fetch_valid_object(Z_OBJ_P(gradient_value));
-        if (!gradient_obj) RETURN_THROWS();
-        gradient = gradient_obj->tensor_handle;
-    }
-    if (!autograd_backward(obj->tensor_handle, gradient, retain_graph))
-        RETURN_THROWS();
-    RETURN_NULL();
-}
-
-ZEND_METHOD(CudaArray, grad)
-{
-    ZEND_PARSE_PARAMETERS_NONE();
-    cuda_array_obj *obj = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!obj) RETURN_THROWS();
-    if (!obj->tensor_handle)
-    {
-        CUDA_THROW_INVALID("Invalid tensor");
-        RETURN_THROWS();
-    }
-    if (!obj->tensor_handle->grad)
-        RETURN_NULL();
-    obj->tensor_handle->grad->ref_count++;
-    create_result_object(return_value, obj->tensor_handle->grad);
-}
-
-ZEND_METHOD(CudaArray, zeroGrad)
-{
-    ZEND_PARSE_PARAMETERS_NONE();
-    cuda_array_obj *obj = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!obj) RETURN_THROWS();
-    if (!obj->tensor_handle)
-    {
-        CUDA_THROW_INVALID("Invalid tensor");
-        RETURN_THROWS();
-    }
-    autograd_clear_gradient(obj->tensor_handle);
-    RETURN_NULL();
-}
-
-ZEND_METHOD(CudaArray, detach)
-{
-    ZEND_PARSE_PARAMETERS_NONE();
-    cuda_array_obj *obj = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!obj) RETURN_THROWS();
-    tensor_t *detached = autograd_detach(obj->tensor_handle);
-    if (!detached) RETURN_THROWS();
-    create_result_object(return_value, detached);
-}
-
 ZEND_METHOD(CudaArray, reshape)
 {
     zval *new_shape_array;
@@ -1711,147 +842,6 @@ ZEND_METHOD(CudaArray, reshape)
     }
 
     create_result_object(return_value, reshaped_tensor);
-}
-
-ZEND_METHOD(CudaArray, squeeze)
-{
-    zval *axis_value = NULL;
-    ZEND_PARSE_PARAMETERS_START(0, 1)
-        Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL(axis_value)
-    ZEND_PARSE_PARAMETERS_END();
-
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    tensor_t *input = object->tensor_handle;
-    int axis = -1;
-    int has_axis = axis_value && Z_TYPE_P(axis_value) != IS_NULL;
-    if (has_axis)
-    {
-        if (Z_TYPE_P(axis_value) != IS_LONG)
-        {
-            CUDA_THROW_INVALID("squeeze axis must be an integer or null");
-            RETURN_THROWS();
-        }
-        zend_long value = Z_LVAL_P(axis_value);
-        if (value < INT_MIN || value > INT_MAX)
-        {
-            CUDA_THROW_INVALID("squeeze axis is outside the supported integer range");
-            RETURN_THROWS();
-        }
-        axis = (int)value;
-        if (axis < 0) axis += input->ndims;
-        if (axis < 0 || axis >= input->ndims)
-        {
-            CUDA_THROW_INVALID("squeeze axis is out of range for tensor rank %d", input->ndims);
-            RETURN_THROWS();
-        }
-        if (input->shape[axis] != 1)
-        {
-            CUDA_THROW_INVALID("Cannot squeeze axis %d with size %d", axis, input->shape[axis]);
-            RETURN_THROWS();
-        }
-    }
-
-    int shape[MAX_DIMS];
-    size_t strides[MAX_DIMS];
-    int ndims = 0;
-    for (int current = 0; current < input->ndims; current++)
-    {
-        int remove_axis = has_axis ? current == axis : input->shape[current] == 1;
-        if (!remove_axis)
-        {
-            shape[ndims++] = input->shape[current];
-            strides[ndims - 1] = input->strides[current];
-        }
-    }
-    if (!ndims)
-    {
-        shape[0] = 1;
-        strides[0] = 1;
-        ndims = 1;
-    }
-    tensor_t *result = cuda_array_make_shape_view(input, shape, strides, ndims);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-ZEND_METHOD(CudaArray, unsqueeze)
-{
-    zend_long requested_axis;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-        Z_PARAM_LONG(requested_axis)
-    ZEND_PARSE_PARAMETERS_END();
-
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-    tensor_t *input = object->tensor_handle;
-    if (requested_axis < INT_MIN || requested_axis > INT_MAX)
-    {
-        CUDA_THROW_INVALID("unsqueeze axis is outside the supported integer range");
-        RETURN_THROWS();
-    }
-    int axis = (int)requested_axis;
-    if (axis < 0) axis += input->ndims + 1;
-    if (axis < 0 || axis > input->ndims || input->ndims >= MAX_DIMS)
-    {
-        CUDA_THROW_INVALID("unsqueeze axis is out of range for tensor rank %d", input->ndims);
-        RETURN_THROWS();
-    }
-
-    int shape[MAX_DIMS];
-    size_t strides[MAX_DIMS];
-    int output_axis = 0;
-    for (int input_axis = 0; input_axis < input->ndims + 1; input_axis++)
-    {
-        if (input_axis == axis)
-        {
-            shape[output_axis++] = 1;
-            strides[output_axis - 1] = 0;
-        }
-        else
-        {
-            shape[output_axis++] = input->shape[input_axis < axis ? input_axis : input_axis - 1];
-            strides[output_axis - 1] = input->strides[input_axis < axis ? input_axis : input_axis - 1];
-        }
-    }
-    tensor_t *result = cuda_array_make_shape_view(input, shape, strides, input->ndims + 1);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
-}
-
-ZEND_METHOD(CudaArray, broadcastTo)
-{
-    zval *shape_value;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-        Z_PARAM_ARRAY(shape_value)
-    ZEND_PARSE_PARAMETERS_END();
-    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
-    if (!object) RETURN_THROWS();
-
-    int shape[MAX_DIMS];
-    int ndims = 0;
-    zval *dimension;
-    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(shape_value), dimension)
-    {
-        if (ndims >= MAX_DIMS || Z_TYPE_P(dimension) != IS_LONG ||
-            Z_LVAL_P(dimension) < 0 || Z_LVAL_P(dimension) > INT_MAX)
-        {
-            CUDA_THROW_INVALID("broadcastTo requires 1 to %d non-negative integer dimensions", MAX_DIMS);
-            RETURN_THROWS();
-        }
-        shape[ndims++] = (int)Z_LVAL_P(dimension);
-    }
-    ZEND_HASH_FOREACH_END();
-    if (!ndims)
-    {
-        CUDA_THROW_INVALID("broadcastTo target shape cannot be empty");
-        RETURN_THROWS();
-    }
-
-    tensor_t *result = cuda_tensor_broadcast_to(object->tensor_handle, shape, ndims);
-    if (!result) RETURN_THROWS();
-    create_result_object(return_value, result);
 }
 
 ZEND_METHOD(CudaArray, flatten)
@@ -2223,11 +1213,7 @@ ZEND_METHOD(CudaArray, slice)
     {
         view = cuda_tensor_create_view(source, shape, strides, ndims, total ? offset : 0, total);
         /* Storage pointers already include the slice displacement. */
-        if (view)
-        {
-            view->offset = 0;
-            autograd_record_slice(view, source, axes, starts, steps);
-        }
+        if (view) view->offset = 0;
     }
     if (!view) RETURN_THROWS();
     create_result_object(return_value, view);
@@ -2569,14 +1555,6 @@ static void reduction_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char
 
     if (axis == REDUCE_GLOBAL_FLAG)
     {
-        if (!return_arg)
-        {
-            tensor_t *result_tensor = cuda_array_public_reduce(
-                this_obj->tensor_handle, REDUCE_GLOBAL_FLAG, operation_type);
-            if (!result_tensor) RETURN_THROWS();
-            create_result_object(return_value, result_tensor);
-            return;
-        }
         size_t total_size = 1;
         for (int i = 0; i < this_obj->tensor_handle->ndims; i++)
         {
@@ -2614,81 +1592,6 @@ static void reduction_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char
     }
 
     create_result_object(return_value, result_tensor);
-}
-
-static tensor_t *cuda_array_public_reduce(tensor_t *input, int axis, operation_type_t operation_type)
-{
-    if (axis == REDUCE_GLOBAL_FLAG)
-    {
-        if (is_contiguous(input))
-        {
-            if (fusion_active())
-                return fusion_reduce(input, -1, operation_type, 0);
-            if (input->total_size > INT_MAX)
-            {
-                CUDA_THROW_INVALID("Global reduction exceeds INT_MAX elements");
-                return NULL;
-            }
-            int shape[] = {(int)input->total_size};
-            tensor_t *flat = cuda_tensor_reshape(input, shape, 1);
-            if (!flat)
-                return NULL;
-            tensor_t *result = cuda_tensor_reduce(flat, 0, operation_type);
-            cuda_tensor_destroy(flat);
-            return result;
-        }
-
-        tensor_t *current = input;
-        current->ref_count++;
-        while (current->ndims > 1)
-        {
-            tensor_t *reduced = cuda_tensor_reduce(current, 0, operation_type);
-            cuda_tensor_destroy(current);
-            if (!reduced)
-                return NULL;
-            current = reduced;
-        }
-        tensor_t *result = cuda_tensor_reduce(current, 0, operation_type);
-        cuda_tensor_destroy(current);
-        return result;
-    }
-    return cuda_tensor_reduce(input, axis, operation_type);
-}
-
-static int cuda_array_parse_axis(tensor_t *input, zval *axis_value, int allow_global, int *axis)
-{
-    if (!axis_value || Z_TYPE_P(axis_value) == IS_NULL)
-    {
-        if (!allow_global)
-        {
-            CUDA_THROW_INVALID("An axis is required");
-            return 0;
-        }
-        *axis = REDUCE_GLOBAL_FLAG;
-        return 1;
-    }
-    if (Z_TYPE_P(axis_value) != IS_LONG)
-    {
-        CUDA_THROW_INVALID("Axis must be an integer or null");
-        return 0;
-    }
-    zend_long value = Z_LVAL_P(axis_value);
-    if (value < INT_MIN || value > INT_MAX)
-    {
-        CUDA_THROW_INVALID("Axis is outside the supported integer range");
-        return 0;
-    }
-    int normalized = (int)value;
-    if (normalized < 0)
-        normalized += input->ndims;
-    if (normalized < 0 || normalized >= input->ndims)
-    {
-        CUDA_THROW_INVALID("Axis %d out of bounds for tensor with %d dimensions",
-                           (int)value, input->ndims);
-        return 0;
-    }
-    *axis = normalized;
-    return 1;
 }
 
 static void binary_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char *operation_name, operation_type_t operation_type)
@@ -3138,9 +2041,7 @@ static tensor_t *cuda_tensor_concat(zval *tensors_array, int axis)
             return NULL;
         }
 
-        cuda_array_obj *other_obj = fusion_active()
-            ? php_cuda_array_fetch_deferred_object(Z_OBJ_P(pzval))
-            : php_cuda_array_fetch_valid_object(Z_OBJ_P(pzval));
+        cuda_array_obj *other_obj = php_cuda_array_fetch_valid_object(Z_OBJ_P(pzval));
         if (!other_obj)
         {
             efree(tensor_list);
@@ -3162,12 +2063,6 @@ static tensor_t *cuda_tensor_concat(zval *tensors_array, int axis)
         }
         else
         {
-            if (current_tensor->dtype != tensor_list[0]->dtype)
-            {
-                CUDA_THROW_INVALID("All tensors must have the same dtype.");
-                efree(tensor_list);
-                return NULL;
-            }
             if (current_tensor->ndims != first_ndims)
             {
                 CUDA_THROW_INVALID("All tensors must have the same number of dimensions (%d != %d).",
@@ -3186,30 +2081,15 @@ static tensor_t *cuda_tensor_concat(zval *tensors_array, int axis)
             }
         }
 
-        if (current_tensor->shape[axis] < 0 ||
-            total_length_on_axis > (size_t)INT_MAX - (size_t)current_tensor->shape[axis])
-        {
-            CUDA_THROW_INVALID("Concatenated axis exceeds the supported dimension size.");
-            efree(tensor_list);
-            return NULL;
-        }
-        total_length_on_axis += (size_t)current_tensor->shape[axis];
+        total_length_on_axis += current_tensor->shape[axis];
         i++;
     }
     ZEND_HASH_FOREACH_END();
 
-    if (fusion_active())
-    {
-        tensor_t *result = fusion_concat(tensor_list, (size_t)list_count, axis);
-        efree(tensor_list);
-        return result;
-    }
-
     int *new_shape = (int *)emalloc(sizeof(int) * first_ndims);
     memcpy(new_shape, tensor_list[0]->shape, sizeof(int) * first_ndims);
     new_shape[axis] = (int)total_length_on_axis;
-    tensor_t *new_tensor = cuda_tensor_create_empty_dtype(
-        new_shape, first_ndims, tensor_list[0]->dtype);
+    tensor_t *new_tensor = cuda_tensor_create_empty(new_shape, first_ndims);
 
     efree(new_shape);
 
@@ -3220,17 +2100,35 @@ static tensor_t *cuda_tensor_concat(zval *tensors_array, int axis)
         return NULL;
     }
 
-    int result = launch_concat_kernel_host(tensor_list, list_count, new_tensor, axis);
+    size_t outer_dims = 1;
+    for (int d = 0; d < axis; d++)
+    {
+        outer_dims *= new_tensor->shape[d];
+    }
+
+    size_t inner_dims = 1;
+    for (int d = axis + 1; d < new_tensor->ndims; d++)
+    {
+        inner_dims *= new_tensor->shape[d];
+    }
+
+    int result = launch_concat_kernel_host(
+        tensor_list,
+        list_count,
+        new_tensor,
+        axis,
+        outer_dims,
+        inner_dims,
+        (int)total_length_on_axis);
+
+    efree(tensor_list);
 
     if (result != SUCCESS)
     {
-        efree(tensor_list);
         cuda_tensor_destroy(new_tensor);
         CUDA_THROW_RUNTIME("CUDA concat kernel failed.");
         return NULL;
     }
 
-    autograd_record_concat(new_tensor, tensor_list, (size_t)list_count, axis);
-    efree(tensor_list);
     return new_tensor;
 }

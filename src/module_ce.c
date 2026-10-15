@@ -23,6 +23,17 @@
 #define ERROR_CHECK_INTERVAL 50
 #define ASYNC_OP_TIMEOUT_MS 30000
 #define INITIAL_STREAM_POOL_SIZE 1
+
+/* CUDA 13 changed cuCtxCreate to require CUctxCreateParams. */
+static CUresult module_create_context(CUcontext *context, unsigned int flags, CUdevice device)
+{
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 13000
+    CUctxCreateParams params = {0};
+    return cuCtxCreate(context, &params, flags, device);
+#else
+    return cuCtxCreate(context, flags, device);
+#endif
+}
 #define MAX_STREAM_POOL_SIZE 100
 #define MIN_KERNEL_SIZE_FOR_ASYNC 256
 #define LAUNCH_CACHE_SIZE 64
@@ -361,7 +372,7 @@ static zend_bool module_get_shared_context(cuda_module_object *module)
         }
 
         unsigned int ctx_flags = CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST | CU_CTX_LMEM_RESIZE_TO_MAX;
-        CUresult result = cuCtxCreate(&g_shared_context, ctx_flags, g_primary_device);
+        CUresult result = module_create_context(&g_shared_context, ctx_flags, g_primary_device);
         if (result != CUDA_SUCCESS)
         {
             pthread_mutex_unlock(&g_shared_context_mutex);
@@ -898,7 +909,7 @@ static zend_bool module_initialize_cuda_context(cuda_module_object *module)
 
     unsigned int ctx_flags = CU_CTX_SCHED_AUTO | CU_CTX_MAP_HOST;
 
-    cu_result = cuCtxCreate(&module->cu_context, ctx_flags, g_primary_device);
+    cu_result = module_create_context(&module->cu_context, ctx_flags, g_primary_device);
     if (cu_result != CUDA_SUCCESS)
     {
         CUDA_THROW_RUNTIME(

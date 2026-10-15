@@ -159,7 +159,7 @@ class ContiguousArray
     public function getNdims(): int {}
     /** Total number of elements. */
     public function getSize(): int {}
-    /** Element dtype name, e.g. float32, float16 or bfloat16. */
+    /** Element dtype name, e.g. float32. */
     public function getDtype(): string {}
     /** Bytes per element. */
     public function getElementSize(): int {}
@@ -183,10 +183,7 @@ class CudaArray
 {
     /** Import row-major little-endian packed bytes matching shape and dtype. */
     public static function fromBuffer(string $bytes, array $shape, ?string $dtype = 'float32'): CudaArray {}
-    /**
-     * Copy a flat numeric PHP array directly into the requested row-major shape.
-     * Supports float16 and bfloat16 storage.
-     */
+    /** Copy a flat numeric PHP array directly into the requested row-major shape. */
     public static function fromFlatArray(array $values, array $shape, ?string $dtype = 'float32'): CudaArray {}
     /** Read raw packed bytes (not .npy) into GPU storage. */
     public static function fromFile(string $path, array $shape, ?string $dtype = 'float32'): CudaArray {}
@@ -219,17 +216,7 @@ class CudaArray
     public function add(CudaArray|float|int|bool $other): CudaArray {}
     /** Elementwise subtract with scalar or broadcast-compatible tensor. */
     public function subtract(CudaArray|float|int|bool $other): CudaArray {}
-    /** Elementwise maximum with broadcasting. Ties route gradients to the left operand. */
-    public function maximum(CudaArray|float|int|bool $other): CudaArray {}
-    /** Elementwise minimum with broadcasting. Ties route gradients to the left operand. */
-    public function minimum(CudaArray|float|int|bool $other): CudaArray {}
-    /** Clamp values to optional inclusive scalar bounds. */
-    public function clamp(float|int|null $min = null, float|int|null $max = null): CudaArray {}
-    /**
-     * Matrix multiply (2D or batched). Matching float32, float16 and bfloat16
-     * operands are supported; low-precision products accumulate in float32
-     * and retain the operand dtype.
-     */
+    /** Matrix multiply (2D or batched); cuBLAS is optional when available. */
     public function matmul(CudaArray $other): CudaArray {}
     /** Permute axes; omitting axis reverses their order. */
     public function transpose(?array $axis = null): CudaArray {}
@@ -279,22 +266,6 @@ class CudaArray
     public function min(?int $axis = null): CudaArray {}
     /** Product across an axis; omit axis to reduce all elements. */
     public function prod(?int $axis = null): CudaArray {}
-    /** Logical AND over nonzero values; returns a bool tensor. */
-    public function all(?int $axis = null): CudaArray {}
-    /** Logical OR over nonzero values; returns a bool tensor. */
-    public function any(?int $axis = null): CudaArray {}
-    /** Population variance by default; correction adjusts the denominator. */
-    public function var(?int $axis = null, int $correction = 0): CudaArray {}
-    /** Square root of var(). */
-    public function std(?int $axis = null, int $correction = 0): CudaArray {}
-    /** Numerically stable softmax; low-precision input is widened to float32. */
-    public function softmax(int $axis = -1): CudaArray {}
-    /**
-     * Normalize across explicit axes, promoting integer input to float64.
-     * Scale and bias shapes follow the axes in the same order.
-     * @param list<int> $axes
-     */
-    public function layerNorm(array $axes, float $epsilon = 0.00001, ?CudaArray $scale = null, ?CudaArray $bias = null): CudaArray {}
     /** Index of maximum across an axis. */
     public function argMax(?int $axis = null): CudaArray {}
     /** Index of minimum across an axis. */
@@ -315,12 +286,6 @@ class CudaArray
     public function toBuffer(): string {}
     /** Create a view with the same element count. */
     public function reshape(array $shape): CudaArray {}
-    /** Remove singleton dimensions; an optional axis must have size one. */
-    public function squeeze(?int $axis = null): CudaArray {}
-    /** Insert a singleton dimension at axis. */
-    public function unsqueeze(int $axis): CudaArray {}
-    /** Broadcast as a shared-storage view to the requested shape. */
-    public function broadcastTo(array $shape): CudaArray {}
     /** Create a one-dimensional view. */
     public function flatten(): CudaArray {}
     /** Allocate a zero-filled GPU tensor. */
@@ -331,60 +296,14 @@ class CudaArray
     public static function full(array $shape, float|int $value, ?string $dtype = 'float32'): CudaArray {}
     /** Generate uniform random GPU values. */
     public static function rand(array $shape, float|int $min = 0, float|int $max = 1, ?string $dtype = 'float32'): CudaArray {}
-    /** Gather values using same-rank int32 indices along an axis. Not supported in Fusion capture. */
-    public function gather(CudaArray $indices, int $axis = 0): CudaArray {}
-    /**
-     * Add updates at indexed positions and return a new tensor. Duplicate indices accumulate.
-     * Currently supports float32/float64 and is not supported in Fusion capture.
-     */
-    public function scatterAdd(CudaArray $indices, CudaArray $updates, int $axis = 0): CudaArray {}
     /**
      * Identical dtype reuses storage; safe conversions allocate converted storage.
      * @throws InvalidArgumentException For an unsafe conversion.
      * @throws RuntimeException If compilation or GPU execution fails.
      */
     public function astype(string $dtype): CudaArray {}
-    /** Element dtype name, e.g. float32, float16 or bfloat16. */
+    /** Element dtype name, e.g. float32. */
     public function dtype(): string {}
-    /** Enable or disable reverse-mode gradient tracking on a leaf tensor. */
-    public function requiresGrad(bool $requiresGrad = true): CudaArray {}
-    /** Compute gradients; non-scalar tensors require a seed. Graphs are freed unless retained. */
-    public function backward(?CudaArray $gradient = null, bool $retainGraph = false): void {}
-    /** Return the accumulated gradient of a leaf tensor, or null before backward(). */
-    public function grad(): ?CudaArray {}
-    /** Clear the accumulated gradient. */
-    public function zeroGrad(): void {}
-    /** Return a view that shares storage but is disconnected from gradient history. */
-    public function detach(): CudaArray {}
-    /** Return the sole tensor element as a PHP scalar. */
-    public function item(): int|float|bool {}
-}
-
-/**
- * Functional SGD and AdamW updates. Optimizer state is explicit so steps can
- * be captured and replayed by Fusion without storing hidden tensor history.
- */
-final class Optimizer
-{
-    private function __construct() {}
-    public static function adamW(float $learningRate = 0.001, float $beta1 = 0.9,
-        float $beta2 = 0.999, float $epsilon = 1.0e-8, float $weightDecay = 0.01): self {}
-    public static function sgd(float $learningRate = 0.01, float $momentum = 0.0,
-        float $weightDecay = 0.0): self {}
-    /** Create zeroed moment/velocity tensors for this ordered parameter list. */
-    public function initState(array $parameters): array {}
-    /** Clear accumulated gradients on the supplied leaf parameters. */
-    public function zeroGrad(array $parameters): void {}
-    /**
-     * Apply one functional optimizer step.
-     * @param list<CudaArray> $parameters
-     * @param list<CudaArray> $gradients
-     * @param array<string,mixed> $state State returned by initState() or step().
-     * @param list<bool>|null $weightDecayMask Defaults to decaying every parameter.
-     * @return array{parameters:list<CudaArray>,state:array<string,mixed>}
-     */
-    public function step(array $parameters, array $gradients, array $state,
-        ?CudaArray $learningRate = null, ?array $weightDecayMask = null): array {}
 }
 
 /** Abstract base dispatching PHP arithmetic operators to magic methods. */

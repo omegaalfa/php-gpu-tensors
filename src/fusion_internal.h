@@ -24,8 +24,7 @@ typedef enum
 {
     FUSION_INPUT, FUSION_BINARY, FUSION_SCALAR, FUSION_UNARY,
     FUSION_REDUCE, FUSION_ARG_REDUCE, FUSION_MATMUL, FUSION_VIEW,
-    FUSION_CAST, FUSION_WHERE, FUSION_SLICE_SCATTER,
-    FUSION_GATHER, FUSION_SCATTER_ADD, FUSION_CONCAT
+    FUSION_CAST, FUSION_WHERE
 } fusion_kind;
 
 typedef struct fusion_node
@@ -107,8 +106,6 @@ typedef struct
     CUgraph cuda_graph;
     CUgraphExec graph_exec;
     CUgraphNode *graph_nodes;
-    CUstream graph_capture_stream;
-    int native_warmed;
     size_t graph_launches;
     size_t buffer_reuses;
     size_t pending;
