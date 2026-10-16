@@ -107,6 +107,18 @@
         __VA_ARGS__;                       \
         break;                             \
     }                                      \
+    case OP_MINIMUM:                       \
+    {                                      \
+        typedef MinimumOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                       \
+        break;                             \
+    }                                      \
+    case OP_MAXIMUM:                       \
+    {                                      \
+        typedef MaximumOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                       \
+        break;                             \
+    }                                      \
     case OP_GT:                            \
     {                                      \
         typedef GTOpT<scalar_t> bin_op_t;  \

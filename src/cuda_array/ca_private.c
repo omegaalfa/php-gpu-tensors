@@ -13,11 +13,13 @@
 #include "tensor.h"
 #include "cuda_exceptions.h"
 #include "fusion.h"
+#include "factory_kernels.h"
 
 tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_type)
 {
     CUDA_CHECK_AND_RETURN_NULL(a);
-    if (fusion_active()) return fusion_binary(a, b, operation_type);
+    if (fusion_active() && operation_type != OP_MINIMUM && operation_type != OP_MAXIMUM)
+        return fusion_binary(a, b, operation_type);
     if (!fusion_materialize(a) || !fusion_materialize(b)) return NULL;
 
     int result_shape[MAX_DIMS];
@@ -33,7 +35,9 @@ tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_ty
         return NULL;
     }
 
-    dtype_t promoted_type = promote_types_for_arithmetic(a->dtype, b->dtype, operation_type);
+    dtype_t promoted_type = (operation_type == OP_MINIMUM || operation_type == OP_MAXIMUM)
+        ? promote_types_for_comparison(a->dtype, b->dtype)
+        : promote_types_for_arithmetic(a->dtype, b->dtype, operation_type);
     if (!can_safely_cast_to(a->dtype, promoted_type))
     {
         CUDA_THROW_INVALID("Cannot safely promote operand A (%s) to %s",
@@ -76,6 +80,46 @@ tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_ty
     {
         cuda_tensor_destroy(result);
         CUDA_THROW_RUNTIME("Broadcast operation failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return result;
+}
+
+tensor_t *cuda_tensor_clip(tensor_t *input, scalar_value_t minimum, scalar_value_t maximum)
+{
+    CUDA_CHECK_AND_RETURN_NULL(input);
+    if (!fusion_materialize(input)) return NULL;
+    if (!is_contiguous(input) && !lazy_copy_metadata_to_gpu(input))
+    {
+        CUDA_THROW_RUNTIME("Failed to prepare clip metadata");
+        return NULL;
+    }
+
+    tensor_t *result = cuda_tensor_create_empty_dtype(input->shape, input->ndims, input->dtype);
+    if (!result)
+    {
+        CUDA_THROW_OOM("Failed to create result tensor for clip");
+        return NULL;
+    }
+
+    if (input->total_size == 0) return result;
+    if (!input->data || !result->data)
+    {
+        cuda_tensor_destroy(result);
+        CUDA_THROW_RUNTIME("Cannot clip tensor without GPU data");
+        return NULL;
+    }
+
+    launch_clip(input->data, input->dtype, minimum, maximum,
+                result->data, result->dtype, input->offset,
+                input->d_shape, input->d_strides, input->ndims,
+                input->total_size, is_contiguous(input));
+
+    cudaError_t status = cudaDeviceSynchronize();
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(result);
+        CUDA_THROW_RUNTIME("Clip operation failed: %s", cudaGetErrorString(status));
         return NULL;
     }
     return result;
@@ -508,18 +552,45 @@ tensor_t *cuda_tensor_copy(tensor_t *tensor)
     if (!tensor)
         return NULL;
 
-    tensor_t *copy = cuda_tensor_create_empty(tensor->shape, tensor->ndims);
+    tensor_t *copy = cuda_tensor_create_empty_dtype(tensor->shape, tensor->ndims, tensor->dtype);
     if (!copy)
         return NULL;
 
-    cudaError_t cuda_status = cudaMemcpy(
-        copy->data, tensor->data,
-        tensor->total_size * sizeof(float),
-        cudaMemcpyDeviceToDevice);
+    if (tensor->total_size == 0)
+        return copy;
+
+    size_t expected = 1;
+    int contiguous = 1;
+    for (int d = tensor->ndims - 1; d >= 0; d--)
+    {
+        if (tensor->shape[d] > 1 && tensor->strides[d] != expected)
+        {
+            contiguous = 0;
+            break;
+        }
+        expected *= (size_t)tensor->shape[d];
+    }
+
+    cudaError_t cuda_status;
+    if (contiguous)
+    {
+        cuda_status = cudaMemcpy(copy->data, tensor->data,
+                                 tensor->total_size * tensor->element_size,
+                                 cudaMemcpyDeviceToDevice);
+    }
+    else
+    {
+        cuda_status = launch_pack_strided(
+            tensor->data, copy->data, tensor->total_size,
+            tensor->element_size, tensor->shape, tensor->strides, tensor->ndims);
+        if (cuda_status == cudaSuccess)
+            cuda_status = cudaDeviceSynchronize();
+    }
 
     if (cuda_status != cudaSuccess)
     {
         cuda_tensor_destroy(copy);
+        CUDA_THROW_RUNTIME("Failed to copy CUDA tensor: %s", cudaGetErrorString(cuda_status));
         return NULL;
     }
 

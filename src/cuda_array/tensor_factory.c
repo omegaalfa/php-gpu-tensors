@@ -7,6 +7,39 @@
 #include "factory_kernels.h"
 #include <stdbool.h>
 #include <limits.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
+
+static _Atomic unsigned long long randn_seed_counter = 0;
+
+static unsigned long long randn_next_seed(const void *data)
+{
+    unsigned long long entropy = 0;
+    unsigned long long counter = atomic_fetch_add_explicit(
+        &randn_seed_counter, 1, memory_order_relaxed) + 1;
+    struct timespec timestamp = {0, 0};
+
+#if defined(__linux__)
+    if (getrandom(&entropy, sizeof(entropy), GRND_NONBLOCK) !=
+        (ssize_t)sizeof(entropy)) {
+        entropy = 0;
+    }
+#endif
+    (void)clock_gettime(CLOCK_MONOTONIC, &timestamp);
+
+    unsigned long long clock_bits =
+        ((unsigned long long)timestamp.tv_sec << 32) ^
+        (unsigned long long)timestamp.tv_nsec;
+    unsigned long long seed = entropy ^ clock_bits ^
+        (unsigned long long)getpid() ^ (unsigned long long)(uintptr_t)data ^
+        counter * 0x9E3779B97F4A7C15ULL;
+
+    return seed != 0 ? seed : (counter != 0 ? counter : 1);
+}
 
 typedef struct {
     tensor_t *tensor;
@@ -357,28 +390,34 @@ int set_rand_tensor_data(void *data,
 
     status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
     if (status != CURAND_STATUS_SUCCESS)
-        return FAILURE;
+    {
+        CUDA_THROW_RUNTIME("rand generator creation failed");
+        goto failure;
+    }
 
     if (seed == 0)
-    {
-        seed = (unsigned long long)time(NULL);
-    }
+        seed = randn_next_seed(data);
 
     status = curandSetPseudoRandomGeneratorSeed(generator, seed);
     if (status != CURAND_STATUS_SUCCESS)
     {
-        destroy_curand_generator(generator);
-        return FAILURE;
+        CUDA_THROW_RUNTIME("rand seed setup failed");
+        goto failure;
     }
 
     status = curandGenerateUniform(generator, temp, size);
     if (status != CURAND_STATUS_SUCCESS)
     {
-        destroy_curand_generator(generator);
-        return FAILURE;
+        CUDA_THROW_RUNTIME("rand generation failed");
+        goto failure;
     }
 
-    cudaDeviceSynchronize();
+    cudaError_t generation_err = cudaDeviceSynchronize();
+    if (generation_err != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("rand generation failed: %s", cudaGetErrorString(generation_err));
+        goto failure;
+    }
 
     if (dtype == DTYPE_BOOL)
     {
@@ -401,6 +440,11 @@ int set_rand_tensor_data(void *data,
     }
 
     return SUCCESS;
+
+failure:
+    destroy_curand_generator(generator);
+    cuda_mem_free(temp);
+    return FAILURE;
 }
 
 tensor_t *cuda_tensor_create_rand(
@@ -441,6 +485,231 @@ tensor_t *cuda_tensor_create_rand(
         return NULL;
     }
 
+    return tensor;
+}
+
+static int set_randn_tensor_data(void *data, size_t size, double mean, double std_dev, dtype_t dtype)
+{
+    if (size == 0)
+        return SUCCESS;
+
+    if (std_dev == 0.0)
+    {
+        scalar_value_t value = {.dtype = dtype, .is_neg = mean < 0.0};
+        if (dtype == DTYPE_FLOAT32)
+            value.v.f32 = (float)mean;
+        else
+            value.v.f64 = mean;
+        launch_assign_scalar_val_kernel(data, dtype, value, size);
+        cudaError_t fill_status = cudaDeviceSynchronize();
+        if (fill_status != cudaSuccess)
+        {
+            CUDA_THROW_RUNTIME("randn fill kernel failed: %s", cudaGetErrorString(fill_status));
+            return FAILURE;
+        }
+        return SUCCESS;
+    }
+
+    curandGenerator_t generator = NULL;
+    void *temporary = NULL;
+    int *invalid = NULL;
+    size_t generated = (size & 1) ? size + 1 : size;
+    size_t element_size = dtype == DTYPE_FLOAT32 ? sizeof(float) : sizeof(double);
+
+    if ((size & 1) && generated > SIZE_MAX / element_size)
+    {
+        CUDA_THROW_INVALID("randn temporary allocation size overflows");
+        return FAILURE;
+    }
+    if (size & 1)
+    {
+        temporary = cuda_mem_alloc(generated * element_size);
+        if (!temporary)
+        {
+            CUDA_THROW_OOM("CUDA Out of Memory: Failed to allocate randn temporary buffer");
+            return FAILURE;
+        }
+    }
+
+    invalid = (int *)cuda_mem_alloc(sizeof(*invalid));
+    if (!invalid)
+    {
+        CUDA_THROW_OOM("CUDA Out of Memory: Failed to allocate randn validation flag");
+        goto failure_cuda;
+    }
+    int invalid_host = 0;
+    cudaError_t flag_status = cudaMemcpy(invalid, &invalid_host, sizeof(invalid_host), cudaMemcpyHostToDevice);
+    if (flag_status != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randn validation setup failed: %s", cudaGetErrorString(flag_status));
+        goto failure_cuda;
+    }
+
+    curandStatus_t status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
+    if (status != CURAND_STATUS_SUCCESS)
+        goto failure;
+
+    unsigned long long seed = randn_next_seed(data);
+    status = curandSetPseudoRandomGeneratorSeed(generator, seed);
+    if (status != CURAND_STATUS_SUCCESS)
+        goto failure;
+
+    if (dtype == DTYPE_FLOAT32)
+    {
+        float *destination = (float *)(temporary ? temporary : data);
+        status = curandGenerateNormal(generator, destination, generated, (float)mean, (float)std_dev);
+    }
+    else
+    {
+        double *destination = (double *)(temporary ? temporary : data);
+        status = curandGenerateNormalDouble(generator, destination, generated, mean, std_dev);
+    }
+    if (status != CURAND_STATUS_SUCCESS)
+        goto failure;
+
+    cudaError_t validation_status = launch_validate_finite_kernel(
+        temporary ? temporary : data, dtype, generated, invalid);
+    if (validation_status != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randn finite-value validation failed: %s", cudaGetErrorString(validation_status));
+        goto failure_cuda;
+    }
+
+    if (temporary)
+    {
+        cudaError_t copy_status = cudaMemcpy(data, temporary, size * element_size, cudaMemcpyDeviceToDevice);
+        if (copy_status != cudaSuccess)
+        {
+            CUDA_THROW_RUNTIME("randn device copy failed: %s", cudaGetErrorString(copy_status));
+            goto failure_cuda;
+        }
+    }
+
+    cudaError_t generation_status = cudaDeviceSynchronize();
+    if (generation_status != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randn generation failed: %s", cudaGetErrorString(generation_status));
+        goto failure_cuda;
+    }
+    flag_status = cudaMemcpy(&invalid_host, invalid, sizeof(invalid_host), cudaMemcpyDeviceToHost);
+    if (flag_status != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randn validation result failed: %s", cudaGetErrorString(flag_status));
+        goto failure_cuda;
+    }
+    if (invalid_host != 0)
+    {
+        CUDA_THROW_RUNTIME("randn generated a non-finite value; reduce mean or std");
+        goto failure_cuda;
+    }
+    destroy_curand_generator(generator);
+    if (temporary) cuda_mem_free(temporary);
+    cuda_mem_free(invalid);
+    return SUCCESS;
+
+failure:
+    destroy_curand_generator(generator);
+failure_cuda:
+    if (temporary) cuda_mem_free(temporary);
+    if (invalid) cuda_mem_free(invalid);
+    return FAILURE;
+}
+
+tensor_t *cuda_tensor_create_randn(
+    int *shape,
+    int ndims,
+    double mean,
+    double std_dev,
+    dtype_t dtype)
+{
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
+    if (!tensor)
+        return NULL;
+
+    if (set_randn_tensor_data(tensor->data, tensor->total_size, mean, std_dev, dtype) != SUCCESS)
+    {
+        cuda_tensor_destroy(tensor);
+        return NULL;
+    }
+    return tensor;
+}
+
+static int set_random_uniform_tensor_data(
+    void *data,
+    size_t size,
+    double minimum,
+    double maximum,
+    unsigned long long seed,
+    dtype_t dtype)
+{
+    if (size == 0)
+        return SUCCESS;
+
+    curandGenerator_t generator = NULL;
+    curandStatus_t status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        CUDA_THROW_RUNTIME("randomUniform generator creation failed");
+        return FAILURE;
+    }
+
+    status = curandSetPseudoRandomGeneratorSeed(generator, seed);
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        CUDA_THROW_RUNTIME("randomUniform seed setup failed");
+        destroy_curand_generator(generator);
+        return FAILURE;
+    }
+
+    if (dtype == DTYPE_FLOAT32)
+        status = curandGenerateUniform(generator, (float *)data, size);
+    else
+        status = curandGenerateUniformDouble(generator, (double *)data, size);
+
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        CUDA_THROW_RUNTIME("randomUniform generation failed");
+        destroy_curand_generator(generator);
+        return FAILURE;
+    }
+
+    cudaError_t scale_status = launch_scale_uniform_range_kernel(
+        data, dtype, size, minimum, maximum);
+    if (scale_status != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randomUniform scaling failed: %s", cudaGetErrorString(scale_status));
+        destroy_curand_generator(generator);
+        return FAILURE;
+    }
+
+    cudaError_t sync_status = cudaDeviceSynchronize();
+    destroy_curand_generator(generator);
+    if (sync_status != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randomUniform kernel failed: %s", cudaGetErrorString(sync_status));
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+
+tensor_t *cuda_tensor_create_random_uniform(
+    int *shape,
+    int ndims,
+    double minimum,
+    double maximum,
+    unsigned long long seed,
+    dtype_t dtype)
+{
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
+    if (!tensor)
+        return NULL;
+
+    if (set_random_uniform_tensor_data(
+            tensor->data, tensor->total_size, minimum, maximum, seed, dtype) != SUCCESS)
+    {
+        cuda_tensor_destroy(tensor);
+        return NULL;
+    }
     return tensor;
 }
 
@@ -615,3 +884,4 @@ tensor_t *cuda_tensor_clone(tensor_t *base_tensor)
     }
     return new_tensor;
 }
+

@@ -160,6 +160,38 @@ struct MinOpT
 };
 
 template <typename T>
+struct MinimumOpT
+{
+    static __device__ __forceinline__ T apply(T a, T b)
+    {
+        if constexpr (std::is_floating_point<T>::value)
+        {
+            if (isnan(a)) return a;
+            if (isnan(b)) return b;
+            if (a == static_cast<T>(0) && b == static_cast<T>(0))
+                return (signbit(a) || signbit(b)) ? -static_cast<T>(0) : static_cast<T>(0);
+        }
+        return (a < b) ? a : b;
+    }
+};
+
+template <typename T>
+struct MaximumOpT
+{
+    static __device__ __forceinline__ T apply(T a, T b)
+    {
+        if constexpr (std::is_floating_point<T>::value)
+        {
+            if (isnan(a)) return a;
+            if (isnan(b)) return b;
+            if (a == static_cast<T>(0) && b == static_cast<T>(0))
+                return (!signbit(a) || !signbit(b)) ? static_cast<T>(0) : -static_cast<T>(0);
+        }
+        return (a > b) ? a : b;
+    }
+};
+
+template <typename T>
 struct ExpOpT
 {
     static __device__ __forceinline__ T apply(T a)

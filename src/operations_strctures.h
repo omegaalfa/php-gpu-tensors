@@ -21,6 +21,8 @@ typedef enum
     OP_CEIL,
     OP_FLOOR,
     OP_ROUND,
+    OP_MINIMUM,
+    OP_MAXIMUM,
 
     OP_GT,
     OP_LT,

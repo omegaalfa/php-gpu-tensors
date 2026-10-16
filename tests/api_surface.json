@@ -796,6 +796,50 @@
                     ],
                     "returnType": "self"
                 },
+                "arange": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "start",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "stop",
+                            "type": "int|float|null",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": null
+                        },
+                        {
+                            "name": "step",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 1
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "argMax": {
                     "static": false,
                     "abstract": false,
@@ -854,6 +898,32 @@
                     "parameters": [],
                     "returnType": "self"
                 },
+                "clip": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "minimum",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "maximum",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "concat": {
                     "static": false,
                     "abstract": false,
@@ -878,6 +948,13 @@
                             "default": null
                         }
                     ],
+                    "returnType": "self"
+                },
+                "copy": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
                     "returnType": "self"
                 },
                 "cos": {
@@ -933,6 +1010,50 @@
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
+                    "returnType": "self"
+                },
+                "eye": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "n",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "m",
+                            "type": "?int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": null
+                        },
+                        {
+                            "name": "k",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
                     "returnType": "self"
                 },
                 "flatten": {
@@ -1168,6 +1289,32 @@
                     ],
                     "returnType": "self"
                 },
+                "identity": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "n",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "le": {
                     "static": false,
                     "abstract": false,
@@ -1185,11 +1332,126 @@
                     ],
                     "returnType": "self"
                 },
+                "linspace": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "start",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "stop",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "num",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 50
+                        },
+                        {
+                            "name": "endpoint",
+                            "type": "bool",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": true
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "log": {
                     "static": false,
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
+                    "returnType": "self"
+                },
+                "logspace": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "start",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "stop",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "num",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 50
+                        },
+                        {
+                            "name": "endpoint",
+                            "type": "bool",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": true
+                        },
+                        {
+                            "name": "base",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 10
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
                     "returnType": "self"
                 },
                 "lt": {
@@ -1243,6 +1505,32 @@
                     ],
                     "returnType": "self"
                 },
+                "maximum": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "a",
+                            "type": "self",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "b",
+                            "type": "self",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "mean": {
                     "static": false,
                     "abstract": false,
@@ -1272,6 +1560,32 @@
                             "variadic": false,
                             "optional": true,
                             "hasDefault": true,
+                            "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "minimum": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "a",
+                            "type": "self",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "b",
+                            "type": "self",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
                             "default": null
                         }
                     ],
@@ -1422,6 +1736,103 @@
                     ],
                     "returnType": "self"
                 },
+                "randn": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "shape",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "mean",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0
+                        },
+                        {
+                            "name": "std",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 1
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "randomUniform": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "shape",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "minimum",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "maximum",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "seed",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "reshape": {
                     "static": false,
                     "abstract": false,
@@ -1477,6 +1888,23 @@
                     "parameters": [],
                     "returnType": "self"
                 },
+                "stack": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "tensors",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "subtract": {
                     "static": false,
                     "abstract": false,
@@ -1516,6 +1944,23 @@
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
+                    "returnType": "self"
+                },
+                "tile": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "times",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        }
+                    ],
                     "returnType": "self"
                 },
                 "toArray": {

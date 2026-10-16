@@ -36,6 +36,13 @@ extern "C"
         size_t total_size,
         int is_contiguous);
 
+    void launch_clip(
+        void *base, dtype_t base_dtype,
+        scalar_value_t minimum, scalar_value_t maximum,
+        void *result, dtype_t result_dtype,
+        size_t base_offset, int *shape, size_t *strides,
+        int ndims, size_t total_size, int is_contiguous);
+
 #ifdef __cplusplus
 }
 #endif

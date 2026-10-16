@@ -313,6 +313,159 @@ methods. `mean()` reduces all values when called without an axis, or reduces one
 dimension when given an axis. It returns `float32` for `float32` input and
 `float64` for `float64`, integer, and boolean input.
 
+`CudaArray::minimum($a, $b)` computes the elementwise minimum of two GPU tensors
+with the existing trailing-dimension broadcasting and dtype-promotion rules. It
+returns independent GPU storage, preserves empty shapes, and propagates `NaN`
+for floating-point inputs; positive and negative infinity follow normal minimum
+ordering.
+
+`CudaArray::maximum($a, $b)` follows the same broadcasting, promotion, view and
+ownership rules. It propagates `NaN`, orders infinities normally, and returns
+`+0.0` when either zero is positive; it returns `-0.0` only when both zeros are
+negative.
+
+`CudaArray::clip($minimum, $maximum)` returns an independent tensor with every
+value limited to the closed interval `[$minimum, $maximum]`. Bounds must be
+ordered, non-NaN values representable by the tensor dtype, and may be infinite
+for floating-point tensors. NaN data is preserved, and non-contiguous views are
+processed directly by the CUDA kernel.
+
+### Normal random GPU tensors with `randn()`
+
+`CudaArray::randn($shape, $mean = 0.0, $std = 1.0, $dtype = 'float32')`
+generates a normal distribution directly on the GPU using cuRAND. The current
+implementation supports `float32` and `float64`; `std = 0` fills the tensor
+with `mean`. No seed parameter is exposed yet. Each non-constant call derives
+its cuRAND seed from a process-local atomic counter combined with operating
+system entropy when available and timing/process data. This avoids repetitions
+caused by allocator address reuse within the same second, but does not promise
+absolute uniqueness or cryptographic security. Exact-value comparisons are not
+appropriate for non-constant tests; identical values for `std = 0` are expected.
+The operation rejects parameters that cannot be represented by the selected
+floating-point dtype and raises a runtime exception if cuRAND produces a
+non-finite transformed value; it never silently saturates such results.
+
+```php
+$samples = Cuda\CudaArray::randn([1000, 4], 2.0, 0.5, 'float64');
+```
+
+`CudaArray::rand()` also generates uniform values on the GPU, but does not
+expose a seed parameter. Each call derives its seed from the same process-local
+atomic seed mechanism used by `randn()`, so exact reproducibility is not
+guaranteed. Use `randomUniform()` when an explicit reproducible seed is needed.
+
+### Reproducible uniform GPU tensors with `randomUniform()`
+
+`CudaArray::randomUniform($shape, $minimum, $maximum, $seed, $dtype = 'float32')`
+generates uniform values in `[minimum, maximum)` directly on the GPU using
+cuRAND. The same seed and parameters produce the same sequence in the same
+CUDA/cuRAND environment; different seeds are intended to produce different
+sequences. The method supports `float32` and `float64` and rejects non-finite
+bounds, invalid intervals, unsupported dtypes, and allocation overflow.
+cuRAND's documented `(0, 1]` samples are rotated at the finite-grid level so
+that the endpoint maps to zero before scaling; finite-precision rounding can
+still collapse nearby samples in extremely narrow intervals.
+
+```php
+$samples = Cuda\CudaArray::randomUniform([1000, 4], -1.0, 1.0, 12345, 'float64');
+```
+
+### GPU sequences with `arange()`
+
+`CudaArray::arange()` creates a one-dimensional sequence directly in GPU
+memory. The stop value is exclusive, and the step may be positive or negative:
+
+```php
+$up = CudaArray::arange(0, 5, 1);       // [0, 1, 2, 3, 4]
+$down = CudaArray::arange(5, 0, -1);    // [5, 4, 3, 2, 1]
+$fractional = CudaArray::arange(0, 1, 0.25, 'float64');
+$implicitStart = CudaArray::arange(5);  // [0, 1, 2, 3, 4]
+```
+
+### Uniform GPU sequences with `linspace()`
+
+`CudaArray::linspace($start, $stop, $num = 50, $endpoint = true, $dtype = 'float32')`
+creates a one-dimensional sequence directly on the GPU. With `endpoint = true`,
+the final value is exactly `$stop`; with `endpoint = false`, `$stop` is excluded.
+
+```php
+$inclusive = Cuda\CudaArray::linspace(0, 1, 5);
+// [0, 0.25, 0.5, 0.75, 1]
+
+$exclusive = Cuda\CudaArray::linspace(0, 1, 5, false);
+// [0, 0.2, 0.4, 0.6, 0.8]
+```
+
+The method supports increasing and decreasing intervals, `num = 0`, and the
+numeric dtypes supported by the extension. Boolean dtype is not supported.
+
+### Logarithmic GPU sequences with `logspace()`
+
+`CudaArray::logspace($start, $stop, $num = 50, $endpoint = true, $base = 10.0, $dtype = 'float32')`
+spaces exponents uniformly and computes `pow($base, $exponent)` directly on the
+GPU. The base must be finite and strictly positive; zero and negative bases are
+rejected because this API is defined over real-valued logarithmic sequences.
+Overflow is rejected before execution, while representable underflow may become
+zero in the selected floating-point dtype.
+
+```php
+$powers = Cuda\CudaArray::logspace(0, 3, 4);
+// [1, 10, 100, 1000]
+
+$binary = Cuda\CudaArray::logspace(2, 0, 3, true, 2.0);
+// [4, 2, 1]
+```
+
+### GPU diagonal matrices with `eye()`
+
+`CudaArray::eye($n, $m = null, $k = 0, $dtype = 'float32')` creates an `n x m`
+matrix directly on the GPU. The optional `k` selects the diagonal: zero is the
+main diagonal, positive values select diagonals above it, and negative values
+select diagonals below it. Dimensions may be zero; negative dimensions and the
+boolean dtype are rejected.
+
+```php
+$identity = Cuda\CudaArray::eye(3);
+// [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
+$upper = Cuda\CudaArray::eye(2, 3, 1);
+// [[0, 1, 0], [0, 0, 1]]
+```
+
+### GPU identity matrices with `identity()`
+
+`CudaArray::identity($n, $dtype = 'float32')` creates a square identity matrix
+directly on the GPU. It is equivalent to `eye($n, $n, 0, $dtype)` and accepts
+the same numeric dtypes; `n=0` produces a `[0, 0]` tensor.
+
+```php
+$identity = Cuda\CudaArray::identity(3);
+// [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+```
+
+Negative dimensions, unsupported dtypes, and allocation overflow raise
+`Cuda\InvalidArgumentException`. This operation currently uses the CUDA
+backend only.
+
+### Independent tensor copies
+
+`CudaArray::copy()` returns an independent tensor with the same shape, dtype,
+and logical values. Non-contiguous slices are materialized in row-major order
+on the GPU, so the copy does not share storage with the source.
+
+### Repeating tensors
+
+`CudaArray::tile($times)` repeats the complete tensor along its first
+dimension. It requires `$times >= 1`, rejects scalar tensors, preserves the
+dtype, and materializes views directly on the GPU with independent storage.
+
+### Stacking tensors
+
+`CudaArray::stack($tensors)` stacks a non-empty array of `CudaArray` objects
+along a new leading dimension. All tensors must have identical shapes and
+dtypes. Views are packed directly on the GPU and the result owns independent
+storage.
+
 ## Python-style slicing
 
 `CudaArray::slice()` accepts a comma-separated expression, or one selector per

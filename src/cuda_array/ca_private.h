@@ -18,6 +18,7 @@ extern "C"
     tensor_t *cuda_tensor_reshape(tensor_t *original, int *new_shape, int new_ndims);
 
     tensor_t *cuda_tensor_op(tensor_t *a, tensor_t *b, operation_type_t operation_type);
+    tensor_t *cuda_tensor_clip(tensor_t *input, scalar_value_t minimum, scalar_value_t maximum);
     tensor_t *cuda_scalar_op(tensor_t *a, scalar_value_t scalar, operation_type_t operation_type);
     tensor_t *cuda_inv_scalar_op(tensor_t *a, scalar_value_t scalar, operation_type_t operation_type);
     tensor_t *cuda_unary_op(tensor_t *a, operation_type_t operation_type);

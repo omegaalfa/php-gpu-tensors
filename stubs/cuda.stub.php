@@ -191,6 +191,12 @@ class CudaArray
     public static function fromNpy(string $path): CudaArray {}
     /** Select x or y by nonzero mask with broadcasting; x/y must share dtype. */
     public static function where(CudaArray $condition, CudaArray $x, CudaArray $y): CudaArray {}
+    /** Elementwise minimum with NumPy-style trailing-dimension broadcasting; NaN propagates. */
+    public static function minimum(CudaArray $a, CudaArray $b): CudaArray {}
+    /** Elementwise maximum with NumPy-style trailing-dimension broadcasting; NaN propagates. */
+    public static function maximum(CudaArray $a, CudaArray $b): CudaArray {}
+    /** Clamp values to the closed interval [$minimum, $maximum]; NaN data is preserved. */
+    public function clip(int|float $minimum, int|float $maximum): CudaArray {}
     /** Copy a rectangular numeric PHP array onto the GPU; keys are ignored in iteration order. */
     public function __construct(array $data, ?string $dtype = 'float32') {}
     /** Serialize contiguous GPU storage; views cannot be serialized directly. */
@@ -294,8 +300,53 @@ class CudaArray
     public static function ones(array $shape, ?string $dtype = 'float32'): CudaArray {}
     /** Allocate a constant-filled GPU tensor. */
     public static function full(array $shape, float|int $value, ?string $dtype = 'float32'): CudaArray {}
-    /** Generate uniform random GPU values. */
+    /** Generate non-reproducible uniform random GPU values; no seed parameter is exposed. */
     public static function rand(array $shape, float|int $min = 0, float|int $max = 1, ?string $dtype = 'float32'): CudaArray {}
+    /** Generate reproducible uniform GPU values in [$minimum, $maximum). */
+    public static function randomUniform(array $shape, float $minimum, float $maximum, int $seed, ?string $dtype = 'float32'): CudaArray {}
+    /**
+     * Generate GPU values from a normal distribution.
+     * No seed parameter is exposed; non-constant calls use a process-local
+     * atomic counter plus available entropy and timing data. This avoids the
+     * known time/address repetition pattern but is not a cryptographic or
+     * absolute-uniqueness guarantee. Non-finite generated values are rejected.
+     */
+    public static function randn(array $shape, float $mean = 0.0, float $std = 1.0, ?string $dtype = 'float32'): CudaArray {}
+    /**
+     * Create a GPU-resident one-dimensional sequence with an exclusive stop.
+     * @throws InvalidArgumentException For zero/non-finite steps or unsupported ranges/dtypes.
+     */
+    public static function arange(float|int $start, float|int|null $stop = null, float|int $step = 1, ?string $dtype = 'float32'): CudaArray {}
+
+    /**
+     * Create a GPU-resident one-dimensional uniformly spaced sequence.
+     * @throws InvalidArgumentException For invalid bounds, counts, or unsupported dtypes.
+     */
+    public static function linspace(float $start, float $stop, int $num = 50, bool $endpoint = true, ?string $dtype = 'float32'): CudaArray {}
+
+    /**
+     * Create a GPU-resident logarithmically spaced sequence.
+     * @throws InvalidArgumentException For non-positive/non-finite bases, invalid counts, overflow, or unsupported dtypes.
+     */
+    public static function logspace(float $start, float $stop, int $num = 50, bool $endpoint = true, float $base = 10.0, ?string $dtype = 'float32'): CudaArray {}
+
+    /**
+     * Create a GPU-resident identity matrix with an optional diagonal offset.
+     * @throws InvalidArgumentException For invalid dimensions or unsupported dtypes.
+     */
+    public static function eye(int $n, ?int $m = null, int $k = 0, ?string $dtype = 'float32'): CudaArray {}
+
+    /**
+     * Create a GPU-resident square identity matrix.
+     * @throws InvalidArgumentException For invalid dimensions or unsupported dtypes.
+     */
+    public static function identity(int $n, ?string $dtype = 'float32'): CudaArray {}
+    /** Return an independent GPU-resident copy, materializing non-contiguous views. */
+    public function copy(): CudaArray {}
+    /** Repeat the tensor along its first dimension with independent GPU storage. */
+    public function tile(int $times): CudaArray {}
+    /** Stack CudaArray objects along a new leading dimension. */
+    public static function stack(array $tensors): CudaArray {}
     /**
      * Identical dtype reuses storage; safe conversions allocate converted storage.
      * @throws InvalidArgumentException For an unsafe conversion.

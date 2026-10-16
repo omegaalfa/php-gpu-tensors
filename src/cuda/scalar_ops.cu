@@ -71,3 +71,19 @@ extern "C" void launch_scalar_inv(
         });
     });
 }
+
+extern "C" void launch_clip(
+    void *base, dtype_t base_dtype,
+    scalar_value_t minimum, scalar_value_t maximum,
+    void *result, dtype_t result_dtype,
+    size_t base_offset, int *shape, size_t *strides,
+    int ndims, size_t total_size, int is_contiguous)
+{
+    DISPATCH_DTYPE(result_dtype, {
+        scalar_t min_value = convert_union_to_type<scalar_t>(minimum);
+        scalar_t max_value = convert_union_to_type<scalar_t>(maximum);
+        launch_clip_op<scalar_t>(base, base_dtype, min_value, max_value,
+            (scalar_t *)result, base_offset, shape, strides, ndims,
+            total_size, is_contiguous);
+    });
+}

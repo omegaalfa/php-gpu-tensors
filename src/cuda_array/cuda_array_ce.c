@@ -15,6 +15,11 @@
 #include "tensor_import.h"
 #include "tensor_where.h"
 #include "fusion.h"
+#include "factory_kernels.h"
+#include <float.h>
+#include <limits.h>
+#include <math.h>
+#include <stdint.h>
 
 zend_class_entry *cuda_array_ce;
 static zend_object_handlers cuda_array_handlers;
@@ -29,8 +34,11 @@ static zend_result cuda_array_do_operation(zend_uchar opcode, zval *result, zval
 static zval *cuda_array_read_dimension(zend_object *object, zval *offset, int type, zval *rv);
 static void cuda_array_write_dimension(zend_object *object, zval *offset, zval *value);
 static tensor_t *cuda_tensor_concat(zval *tensors_array, int axis);
+static tensor_t *cuda_tensor_stack(zval *tensors_array);
 static void static_tensor_creator(INTERNAL_FUNCTION_PARAMETERS, const char *method_name, scalar_value_t scalar_value);
 static void rand_tensor_creator(INTERNAL_FUNCTION_PARAMETERS, unsigned long long seed);
+static int parse_clip_bound(zval *value, scalar_value_t *result, const char *name);
+static int clip_bounds_fit_dtype(dtype_t dtype, scalar_value_t minimum, scalar_value_t maximum);
 
 static void reduction_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char *operation_name, operation_type_t operation_type, int return_arg);
 static void unary_operation_handler(INTERNAL_FUNCTION_PARAMETERS, const char *operation_name, operation_type_t operation_type);
@@ -52,6 +60,202 @@ static dtype_t parse_dtype_param(zend_string *dtype_str)
     }
 
     return dtype;
+}
+
+static int arange_parse_number(zval *value, double *result, const char *name)
+{
+    if (Z_TYPE_P(value) == IS_LONG)
+    {
+        *result = (double)Z_LVAL_P(value);
+    }
+    else if (Z_TYPE_P(value) == IS_DOUBLE)
+    {
+        *result = Z_DVAL_P(value);
+    }
+    else
+    {
+        CUDA_THROW_INVALID("arange %s must be an integer or float", name);
+        return 0;
+    }
+
+    if (!isfinite(*result))
+    {
+        CUDA_THROW_INVALID("arange %s must be finite", name);
+        return 0;
+    }
+    return 1;
+}
+
+static int arange_value_fits_dtype(dtype_t dtype, long double value)
+{
+    switch (dtype)
+    {
+        case DTYPE_FLOAT32: return value >= -(long double)FLT_MAX && value <= (long double)FLT_MAX;
+        case DTYPE_FLOAT64: return value >= -(long double)DBL_MAX && value <= (long double)DBL_MAX;
+        case DTYPE_INT8: return value >= (long double)INT8_MIN && value <= (long double)INT8_MAX;
+        case DTYPE_INT16: return value >= (long double)INT16_MIN && value <= (long double)INT16_MAX;
+        case DTYPE_INT32: return value >= (long double)INT32_MIN && value <= (long double)INT32_MAX;
+        case DTYPE_INT64: return value >= (long double)INT64_MIN && value <= (long double)INT64_MAX;
+        case DTYPE_UINT8: return value >= 0.0L && value <= (long double)UINT8_MAX;
+        case DTYPE_UINT16: return value >= 0.0L && value <= (long double)UINT16_MAX;
+        case DTYPE_UINT32: return value >= 0.0L && value <= (long double)UINT32_MAX;
+        case DTYPE_UINT64: return value >= 0.0L && value <= (long double)UINT64_MAX;
+        default: return 0;
+    }
+}
+
+static long double logspace_dtype_log_max(dtype_t dtype)
+{
+    switch (dtype)
+    {
+        case DTYPE_FLOAT32: return logl((long double)FLT_MAX);
+        case DTYPE_FLOAT64: return logl((long double)DBL_MAX);
+        case DTYPE_INT8: return logl((long double)INT8_MAX);
+        case DTYPE_INT16: return logl((long double)INT16_MAX);
+        case DTYPE_INT32: return logl((long double)INT32_MAX);
+        case DTYPE_INT64: return logl((long double)INT64_MAX);
+        case DTYPE_UINT8: return logl((long double)UINT8_MAX);
+        case DTYPE_UINT16: return logl((long double)UINT16_MAX);
+        case DTYPE_UINT32: return logl((long double)UINT32_MAX);
+        case DTYPE_UINT64: return logl((long double)UINT64_MAX);
+        default: return -1.0L;
+    }
+}
+
+static int parse_clip_bound(zval *value, scalar_value_t *result, const char *name)
+{
+    memset(result, 0, sizeof(*result));
+    if (Z_TYPE_P(value) == IS_LONG)
+    {
+        result->dtype = DTYPE_INT64;
+        result->v.i64 = Z_LVAL_P(value);
+        result->is_neg = result->v.i64 < 0;
+        return 1;
+    }
+    if (Z_TYPE_P(value) == IS_DOUBLE)
+    {
+        result->dtype = DTYPE_FLOAT64;
+        result->v.f64 = Z_DVAL_P(value);
+        result->is_neg = result->v.f64 < 0;
+        if (isnan(result->v.f64))
+        {
+            CUDA_THROW_INVALID("clip %s must not be NaN", name);
+            return 0;
+        }
+        return 1;
+    }
+    CUDA_THROW_INVALID("clip %s must be an integer or float", name);
+    return 0;
+}
+
+static long double clip_bound_as_long_double(scalar_value_t value)
+{
+    return value.dtype == DTYPE_INT64
+        ? (long double)value.v.i64
+        : (long double)value.v.f64;
+}
+
+static int clip_bounds_fit_dtype(dtype_t dtype, scalar_value_t minimum, scalar_value_t maximum)
+{
+    long double min_value = clip_bound_as_long_double(minimum);
+    long double max_value = clip_bound_as_long_double(maximum);
+    if (min_value > max_value) return 0;
+
+    if (dtype == DTYPE_FLOAT32)
+    {
+        float min_f = (float)min_value;
+        float max_f = (float)max_value;
+        return (isfinite(min_value) ? isfinite((double)min_f) : 1) &&
+               (isfinite(max_value) ? isfinite((double)max_f) : 1) &&
+               min_f <= max_f;
+    }
+    if (dtype == DTYPE_FLOAT64) return 1;
+    if (dtype == DTYPE_BOOL)
+        return min_value >= 0.0L && max_value <= 1.0L &&
+               truncl(min_value) == min_value && truncl(max_value) == max_value;
+    if (!isfinite(min_value) || !isfinite(max_value) ||
+        truncl(min_value) != min_value || truncl(max_value) != max_value)
+        return 0;
+    return arange_value_fits_dtype(dtype, min_value) &&
+           arange_value_fits_dtype(dtype, max_value);
+}
+
+static tensor_t *create_eye_tensor(int rows, int cols, int64_t offset, dtype_t dtype)
+{
+    size_t row_count = (size_t)rows;
+    size_t column_count = (size_t)cols;
+    if (column_count != 0 && row_count > SIZE_MAX / column_count)
+    {
+        CUDA_THROW_INVALID("eye matrix size overflows the supported allocation");
+        return NULL;
+    }
+    size_t elements = row_count * column_count;
+    if (elements > SIZE_MAX / dtype_size(dtype))
+    {
+        CUDA_THROW_INVALID("eye matrix allocation size overflows the supported allocation");
+        return NULL;
+    }
+    int shape[2] = {rows, cols};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 2, dtype);
+    if (!tensor)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to allocate eye tensor");
+        return NULL;
+    }
+    cudaError_t status = launch_eye_kernel(tensor->data, dtype, elements, rows, cols, offset);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("eye kernel failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return tensor;
+}
+
+static int arange_calculate_count(double start, double stop, double step, size_t *count)
+{
+    long double span;
+    if (step > 0.0)
+    {
+        if (start >= stop) { *count = 0; return 1; }
+        span = (long double)stop - (long double)start;
+    }
+    else
+    {
+        if (start <= stop) { *count = 0; return 1; }
+        span = (long double)start - (long double)stop;
+    }
+
+    long double quotient = span / fabsl((long double)step);
+    if (!isfinite((double)quotient) || quotient > (long double)INT_MAX)
+    {
+        CUDA_THROW_INVALID("arange result is too large");
+        return 0;
+    }
+
+    long double candidate = ceill(quotient);
+    if (candidate > (long double)INT_MAX)
+    {
+        CUDA_THROW_INVALID("arange result exceeds the supported shape size");
+        return 0;
+    }
+
+    size_t result = (size_t)candidate;
+    while (result > 0)
+    {
+        long double value = (long double)start + (long double)(result - 1) * (long double)step;
+        if ((step > 0.0 && value < (long double)stop) || (step < 0.0 && value > (long double)stop)) break;
+        result--;
+    }
+    while (result < (size_t)INT_MAX)
+    {
+        long double value = (long double)start + (long double)result * (long double)step;
+        if (!((step > 0.0 && value < (long double)stop) || (step < 0.0 && value > (long double)stop))) break;
+        result++;
+    }
+
+    *count = result;
+    return 1;
 }
 
 ZEND_METHOD(CudaArray, __construct)
@@ -229,6 +433,76 @@ ZEND_METHOD(CudaArray, where)
 
     tensor_t *result = fusion_active() ? fusion_where(tensors[0], tensors[1], tensors[2])
         : cuda_tensor_where(tensors[0], tensors[1], tensors[2]);
+    if (!result) RETURN_THROWS();
+    create_result_object(return_value, result);
+}
+
+ZEND_METHOD(CudaArray, minimum)
+{
+    zval *a_value, *b_value;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_OBJECT_OF_CLASS(a_value, cuda_array_ce)
+        Z_PARAM_OBJECT_OF_CLASS(b_value, cuda_array_ce)
+    ZEND_PARSE_PARAMETERS_END();
+
+    cuda_array_obj *a_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(a_value));
+    if (!a_object) RETURN_THROWS();
+    cuda_array_obj *b_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(b_value));
+    if (!b_object) RETURN_THROWS();
+
+    tensor_t *result = cuda_tensor_op(a_object->tensor_handle, b_object->tensor_handle, OP_MINIMUM);
+    if (!result) RETURN_THROWS();
+    create_result_object(return_value, result);
+}
+
+ZEND_METHOD(CudaArray, maximum)
+{
+    zval *a_value, *b_value;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_OBJECT_OF_CLASS(a_value, cuda_array_ce)
+        Z_PARAM_OBJECT_OF_CLASS(b_value, cuda_array_ce)
+    ZEND_PARSE_PARAMETERS_END();
+
+    cuda_array_obj *a_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(a_value));
+    if (!a_object) RETURN_THROWS();
+    cuda_array_obj *b_object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(b_value));
+    if (!b_object) RETURN_THROWS();
+
+    tensor_t *result = cuda_tensor_op(a_object->tensor_handle, b_object->tensor_handle, OP_MAXIMUM);
+    if (!result) RETURN_THROWS();
+    create_result_object(return_value, result);
+}
+
+ZEND_METHOD(CudaArray, clip)
+{
+    zval *minimum_value, *maximum_value;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_ZVAL(minimum_value)
+        Z_PARAM_ZVAL(maximum_value)
+    ZEND_PARSE_PARAMETERS_END();
+
+    scalar_value_t minimum, maximum;
+    if (!parse_clip_bound(minimum_value, &minimum, "minimum") ||
+        !parse_clip_bound(maximum_value, &maximum, "maximum"))
+        RETURN_THROWS();
+
+    cuda_array_obj *object = php_cuda_array_fetch_valid_object(Z_OBJ_P(ZEND_THIS));
+    if (!object) RETURN_THROWS();
+    tensor_t *input = object->tensor_handle;
+    long double min_ld = clip_bound_as_long_double(minimum);
+    long double max_ld = clip_bound_as_long_double(maximum);
+    if (min_ld > max_ld)
+    {
+        CUDA_THROW_INVALID("clip minimum must be less than or equal to maximum");
+        RETURN_THROWS();
+    }
+    if (!clip_bounds_fit_dtype(input->dtype, minimum, maximum))
+    {
+        CUDA_THROW_INVALID("clip bounds are incompatible with dtype '%s'", dtype_to_string(input->dtype));
+        RETURN_THROWS();
+    }
+
+    tensor_t *result = cuda_tensor_clip(input, minimum, maximum);
     if (!result) RETURN_THROWS();
     create_result_object(return_value, result);
 }
@@ -421,6 +695,438 @@ ZEND_METHOD(CudaArray, le)
     binary_operation_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU, "LessEqual", OP_LE);
 }
 
+ZEND_METHOD(CudaArray, arange)
+{
+    zval *start_zv, *stop_zv = NULL, *step_zv = NULL;
+    zend_string *dtype_str = NULL;
+    double start_arg, stop_arg = 0.0, step_arg = 1.0;
+
+    ZEND_PARSE_PARAMETERS_START(1, 4)
+        Z_PARAM_ZVAL(start_zv)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_ZVAL_EX(stop_zv, 1, 0)
+        Z_PARAM_ZVAL_EX(step_zv, 1, 0)
+        Z_PARAM_STR(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    int argc = ZEND_NUM_ARGS();
+    if (argc == 1)
+    {
+        if (!arange_parse_number(start_zv, &stop_arg, "stop")) RETURN_THROWS();
+        start_arg = 0.0;
+    }
+    else
+    {
+        if (!stop_zv || Z_TYPE_P(stop_zv) == IS_NULL)
+        {
+            CUDA_THROW_INVALID("arange stop cannot be null when explicitly provided");
+            RETURN_THROWS();
+        }
+        if (!arange_parse_number(start_zv, &start_arg, "start") ||
+            !arange_parse_number(stop_zv, &stop_arg, "stop")) RETURN_THROWS();
+        if (argc >= 3)
+        {
+            if (!step_zv || Z_TYPE_P(step_zv) == IS_NULL)
+            {
+                CUDA_THROW_INVALID("arange step cannot be null when explicitly provided");
+                RETURN_THROWS();
+            }
+            if (!arange_parse_number(step_zv, &step_arg, "step")) RETURN_THROWS();
+        }
+    }
+
+    if (step_arg == 0.0)
+    {
+        CUDA_THROW_INVALID("arange step cannot be zero");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype == DTYPE_UNKNOWN || dtype == DTYPE_BOOL || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("Unsupported dtype for arange: '%s'", dtype_str ? ZSTR_VAL(dtype_str) : "float32");
+        RETURN_THROWS();
+    }
+
+    size_t count;
+    if (!arange_calculate_count(start_arg, stop_arg, step_arg, &count)) RETURN_THROWS();
+
+    if (count > 0)
+    {
+        long double last = (long double)start_arg + (long double)(count - 1) * (long double)step_arg;
+        if (!arange_value_fits_dtype(dtype, (long double)start_arg) ||
+            !arange_value_fits_dtype(dtype, last))
+        {
+            CUDA_THROW_INVALID("arange values exceed the representable range of dtype '%s'", dtype_to_string(dtype));
+            RETURN_THROWS();
+        }
+    }
+
+    int shape[1] = {(int)count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to allocate arange tensor");
+        RETURN_THROWS();
+    }
+
+    cudaError_t status = launch_arange_kernel(tensor->data, dtype, count, start_arg, step_arg);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("arange kernel failed: %s", cudaGetErrorString(status));
+        RETURN_THROWS();
+    }
+
+    create_result_object(return_value, tensor);
+}
+
+ZEND_METHOD(CudaArray, linspace)
+{
+    double start_arg, stop_arg;
+    zend_long num_arg = 50;
+    zend_bool endpoint_arg = 1;
+    zend_string *dtype_str = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(2, 5)
+        Z_PARAM_DOUBLE(start_arg)
+        Z_PARAM_DOUBLE(stop_arg)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG(num_arg)
+        Z_PARAM_BOOL(endpoint_arg)
+        Z_PARAM_STR(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!isfinite(start_arg) || !isfinite(stop_arg))
+    {
+        CUDA_THROW_INVALID("linspace start and stop must be finite");
+        RETURN_THROWS();
+    }
+
+    if (num_arg < 0)
+    {
+        CUDA_THROW_INVALID("linspace num cannot be negative");
+        RETURN_THROWS();
+    }
+    if ((uint64_t)num_arg > (uint64_t)INT_MAX)
+    {
+        CUDA_THROW_INVALID("linspace num exceeds the supported shape size");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype == DTYPE_UNKNOWN || dtype == DTYPE_BOOL || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("Unsupported dtype for linspace: '%s'", dtype_str ? ZSTR_VAL(dtype_str) : "float32");
+        RETURN_THROWS();
+    }
+
+    size_t count = (size_t)num_arg;
+    if (count > 0)
+    {
+        long double last = (long double)start_arg;
+        if (count > 1)
+        {
+            long double denominator = endpoint_arg ? (long double)(count - 1) : (long double)count;
+            last += ((long double)stop_arg - (long double)start_arg) *
+                ((long double)(count - 1) / denominator);
+        }
+        if (!arange_value_fits_dtype(dtype, (long double)start_arg) ||
+            !arange_value_fits_dtype(dtype, last) ||
+            (endpoint_arg && !arange_value_fits_dtype(dtype, (long double)stop_arg)))
+        {
+            CUDA_THROW_INVALID("linspace values exceed the representable range of dtype '%s'", dtype_to_string(dtype));
+            RETURN_THROWS();
+        }
+    }
+
+    int shape[1] = {(int)count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to allocate linspace tensor");
+        RETURN_THROWS();
+    }
+
+    cudaError_t status = launch_linspace_kernel(
+        tensor->data, dtype, count, start_arg, stop_arg, endpoint_arg);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("linspace kernel failed: %s", cudaGetErrorString(status));
+        RETURN_THROWS();
+    }
+
+    create_result_object(return_value, tensor);
+}
+
+ZEND_METHOD(CudaArray, logspace)
+{
+    double start_arg, stop_arg, base_arg = 10.0;
+    zend_long num_arg = 50;
+    zend_bool endpoint_arg = 1;
+    zend_string *dtype_str = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(2, 6)
+        Z_PARAM_DOUBLE(start_arg)
+        Z_PARAM_DOUBLE(stop_arg)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG(num_arg)
+        Z_PARAM_BOOL(endpoint_arg)
+        Z_PARAM_DOUBLE(base_arg)
+        Z_PARAM_STR(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!isfinite(start_arg) || !isfinite(stop_arg))
+    {
+        CUDA_THROW_INVALID("logspace start and stop must be finite");
+        RETURN_THROWS();
+    }
+    if (!isfinite(base_arg) || base_arg <= 0.0)
+    {
+        CUDA_THROW_INVALID("logspace base must be finite and greater than zero");
+        RETURN_THROWS();
+    }
+    if (num_arg < 0)
+    {
+        CUDA_THROW_INVALID("logspace num cannot be negative");
+        RETURN_THROWS();
+    }
+    if ((uint64_t)num_arg > (uint64_t)INT_MAX)
+    {
+        CUDA_THROW_INVALID("logspace num exceeds the supported shape size");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype == DTYPE_UNKNOWN || dtype == DTYPE_BOOL || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("Unsupported dtype for logspace: '%s'", dtype_str ? ZSTR_VAL(dtype_str) : "float32");
+        RETURN_THROWS();
+    }
+
+    size_t count = (size_t)num_arg;
+    if (count > 0)
+    {
+        long double last_exponent = (long double)start_arg;
+        if (count > 1)
+        {
+            long double denominator = endpoint_arg ? (long double)(count - 1) : (long double)count;
+            last_exponent += ((long double)stop_arg - (long double)start_arg) *
+                ((long double)(count - 1) / denominator);
+        }
+
+        long double log_base = logl((long double)base_arg);
+        long double first_log = log_base * (long double)start_arg;
+        long double last_log = log_base * last_exponent;
+        long double max_log = first_log > last_log ? first_log : last_log;
+        if (endpoint_arg)
+        {
+            long double stop_log = log_base * (long double)stop_arg;
+            if (stop_log > max_log) max_log = stop_log;
+        }
+        if (!isfinite((double)max_log) || max_log > logspace_dtype_log_max(dtype))
+        {
+            CUDA_THROW_INVALID("logspace result overflows dtype '%s'", dtype_to_string(dtype));
+            RETURN_THROWS();
+        }
+    }
+
+    int shape[1] = {(int)count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to allocate logspace tensor");
+        RETURN_THROWS();
+    }
+
+    cudaError_t status = launch_logspace_kernel(
+        tensor->data, dtype, count, start_arg, stop_arg, base_arg, endpoint_arg);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("logspace kernel failed: %s", cudaGetErrorString(status));
+        RETURN_THROWS();
+    }
+
+    create_result_object(return_value, tensor);
+}
+
+ZEND_METHOD(CudaArray, eye)
+{
+    zend_long n_arg, k_arg = 0, m_arg = 0;
+    bool m_is_null = 1;
+    zend_string *dtype_str = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(1, 4)
+        Z_PARAM_LONG(n_arg)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG_OR_NULL(m_arg, m_is_null)
+        Z_PARAM_LONG(k_arg)
+        Z_PARAM_STR(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (n_arg < 0)
+    {
+        CUDA_THROW_INVALID("eye n cannot be negative");
+        RETURN_THROWS();
+    }
+    if (!m_is_null && m_arg < 0)
+    {
+        CUDA_THROW_INVALID("eye m cannot be negative");
+        RETURN_THROWS();
+    }
+    if (n_arg > INT_MAX || (!m_is_null && m_arg > INT_MAX))
+    {
+        CUDA_THROW_INVALID("eye dimensions exceed the supported shape size");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype == DTYPE_UNKNOWN || dtype == DTYPE_BOOL || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("Unsupported dtype for eye: '%s'", dtype_str ? ZSTR_VAL(dtype_str) : "float32");
+        RETURN_THROWS();
+    }
+
+    int rows = (int)n_arg;
+    int cols = m_is_null ? rows : (int)m_arg;
+    tensor_t *tensor = create_eye_tensor(rows, cols, (int64_t)k_arg, dtype);
+    if (!tensor) RETURN_THROWS();
+    create_result_object(return_value, tensor);
+}
+
+ZEND_METHOD(CudaArray, identity)
+{
+    zend_long n_arg;
+    zend_string *dtype_str = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(1, 2)
+        Z_PARAM_LONG(n_arg)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_STR(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (n_arg < 0)
+    {
+        CUDA_THROW_INVALID("identity n cannot be negative");
+        RETURN_THROWS();
+    }
+    if (n_arg > INT_MAX)
+    {
+        CUDA_THROW_INVALID("identity dimension exceeds the supported shape size");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype == DTYPE_UNKNOWN || dtype == DTYPE_BOOL || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("Unsupported dtype for identity: '%s'", dtype_str ? ZSTR_VAL(dtype_str) : "float32");
+        RETURN_THROWS();
+    }
+
+    tensor_t *tensor = create_eye_tensor((int)n_arg, (int)n_arg, 0, dtype);
+    if (!tensor) RETURN_THROWS();
+    create_result_object(return_value, tensor);
+}
+
+ZEND_METHOD(CudaArray, copy)
+{
+    cuda_array_obj *object = php_cuda_array_fetch_deferred_object(Z_OBJ_P(ZEND_THIS));
+    if (!object) RETURN_THROWS();
+    if (!fusion_materialize(object->tensor_handle)) RETURN_THROWS();
+
+    tensor_t *copy = cuda_tensor_copy(object->tensor_handle);
+    if (!copy)
+    {
+        if (!EG(exception))
+            CUDA_THROW_RUNTIME("Failed to copy CUDA tensor");
+        RETURN_THROWS();
+    }
+    create_result_object(return_value, copy);
+}
+
+ZEND_METHOD(CudaArray, tile)
+{
+    zend_long times_arg;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_LONG(times_arg)
+    ZEND_PARSE_PARAMETERS_END();
+
+    cuda_array_obj *object = php_cuda_array_fetch_valid_object(Z_OBJ_P(ZEND_THIS));
+    if (!object) RETURN_THROWS();
+    tensor_t *source = object->tensor_handle;
+
+    if (times_arg <= 0)
+    {
+        CUDA_THROW_INVALID("tile times must be >= 1");
+        RETURN_THROWS();
+    }
+    if (source->ndims == 0)
+    {
+        CUDA_THROW_INVALID("tile cannot repeat a scalar tensor");
+        RETURN_THROWS();
+    }
+
+    size_t times = (size_t)times_arg;
+    if ((size_t)source->shape[0] > SIZE_MAX / times)
+    {
+        CUDA_THROW_INVALID("tile shape size overflows the supported allocation");
+        RETURN_THROWS();
+    }
+    size_t output_first_dim = (size_t)source->shape[0] * times;
+    if (output_first_dim > INT_MAX)
+    {
+        CUDA_THROW_INVALID("tile output dimension exceeds the supported shape size");
+        RETURN_THROWS();
+    }
+
+    int output_shape[MAX_DIMS];
+    memcpy(output_shape, source->shape, sizeof(int) * source->ndims);
+    output_shape[0] = (int)output_first_dim;
+    size_t output_elements;
+    if (source->total_size != 0 && times > SIZE_MAX / source->total_size)
+    {
+        CUDA_THROW_INVALID("tile output size overflows the supported allocation");
+        RETURN_THROWS();
+    }
+    output_elements = source->total_size * times;
+
+    tensor_t *result = cuda_tensor_create_empty_dtype(output_shape, source->ndims, source->dtype);
+    if (!result)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to allocate tile tensor");
+        RETURN_THROWS();
+    }
+    if (output_elements != 0)
+    {
+        cudaError_t status = launch_tile_strided(
+            source->data, result->data, source->total_size, output_elements,
+            source->element_size, source->shape, source->strides, source->ndims);
+        if (status == cudaSuccess)
+            status = cudaDeviceSynchronize();
+        if (status != cudaSuccess)
+        {
+            cuda_tensor_destroy(result);
+            CUDA_THROW_RUNTIME("tile kernel failed: %s", cudaGetErrorString(status));
+            RETURN_THROWS();
+        }
+    }
+    create_result_object(return_value, result);
+}
+
+ZEND_METHOD(CudaArray, stack)
+{
+    zval *tensors_array;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_ARRAY(tensors_array)
+    ZEND_PARSE_PARAMETERS_END();
+
+    tensor_t *result = cuda_tensor_stack(tensors_array);
+    if (!result) RETURN_THROWS();
+    create_result_object(return_value, result);
+}
+
 ZEND_METHOD(CudaArray, zeros)
 {
     scalar_value_t scalar_value;
@@ -443,7 +1149,185 @@ ZEND_METHOD(CudaArray, ones)
 
 ZEND_METHOD(CudaArray, rand)
 {
-    rand_tensor_creator(INTERNAL_FUNCTION_PARAM_PASSTHRU, 4242424242424242ULL);
+    rand_tensor_creator(INTERNAL_FUNCTION_PARAM_PASSTHRU, 0);
+}
+
+ZEND_METHOD(CudaArray, randomUniform)
+{
+    zval *shape_array;
+    double minimum_arg;
+    double maximum_arg;
+    zend_long seed_arg;
+    zend_string *dtype_str = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(4, 5)
+        Z_PARAM_ARRAY(shape_array)
+        Z_PARAM_DOUBLE(minimum_arg)
+        Z_PARAM_DOUBLE(maximum_arg)
+        Z_PARAM_LONG(seed_arg)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_STR_OR_NULL(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!isfinite(minimum_arg) || !isfinite(maximum_arg) ||
+        !(minimum_arg < maximum_arg))
+    {
+        CUDA_THROW_INVALID("randomUniform bounds must be finite and minimum must be less than maximum");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype != DTYPE_FLOAT32 && dtype != DTYPE_FLOAT64)
+    {
+        CUDA_THROW_INVALID("randomUniform supports only float32 and float64 dtypes");
+        RETURN_THROWS();
+    }
+    if (dtype == DTYPE_FLOAT32)
+    {
+        float minimum_f32 = (float)minimum_arg;
+        float maximum_f32 = (float)maximum_arg;
+        if (!isfinite((double)minimum_f32) || !isfinite((double)maximum_f32) ||
+            !(minimum_f32 < maximum_f32))
+        {
+            CUDA_THROW_INVALID("randomUniform bounds are not representable in float32");
+            RETURN_THROWS();
+        }
+        minimum_arg = (double)minimum_f32;
+        maximum_arg = (double)maximum_f32;
+    }
+
+    HashTable *shape_ht = Z_ARRVAL_P(shape_array);
+    uint32_t shape_count = zend_hash_num_elements(shape_ht);
+    if (shape_count == 0 || shape_count > MAX_DIMS)
+    {
+        CUDA_THROW_INVALID("randomUniform shape must contain between 1 and %d dimensions", MAX_DIMS);
+        RETURN_THROWS();
+    }
+
+    int shape[MAX_DIMS] = {0};
+    size_t elements = 1;
+    uint32_t index = 0;
+    zval *dimension;
+    ZEND_HASH_FOREACH_VAL(shape_ht, dimension)
+    {
+        if (Z_TYPE_P(dimension) != IS_LONG || Z_LVAL_P(dimension) < 0 ||
+            Z_LVAL_P(dimension) > INT_MAX)
+        {
+            CUDA_THROW_INVALID("randomUniform shape dimensions must be non-negative integers no greater than %d", INT_MAX);
+            RETURN_THROWS();
+        }
+        shape[index++] = (int)Z_LVAL_P(dimension);
+        if (shape[index - 1] != 0 && elements > SIZE_MAX / (size_t)shape[index - 1])
+        {
+            CUDA_THROW_INVALID("randomUniform shape size overflows the supported allocation");
+            RETURN_THROWS();
+        }
+        elements *= (size_t)shape[index - 1];
+    }
+    ZEND_HASH_FOREACH_END();
+
+    if (elements > SIZE_MAX / dtype_size(dtype))
+    {
+        CUDA_THROW_INVALID("randomUniform allocation size overflows the supported allocation");
+        RETURN_THROWS();
+    }
+
+    tensor_t *tensor = cuda_tensor_create_random_uniform(
+        shape, (int)shape_count, minimum_arg, maximum_arg,
+        (unsigned long long)seed_arg, dtype);
+    if (!tensor)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to create randomUniform tensor");
+        RETURN_THROWS();
+    }
+
+    create_result_object(return_value, tensor);
+}
+
+ZEND_METHOD(CudaArray, randn)
+{
+    zval *shape_array;
+    double mean_arg = 0.0;
+    double std_arg = 1.0;
+    zend_string *dtype_str = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(1, 4)
+        Z_PARAM_ARRAY(shape_array)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_DOUBLE(mean_arg)
+        Z_PARAM_DOUBLE(std_arg)
+        Z_PARAM_STR(dtype_str)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!isfinite(mean_arg) || !isfinite(std_arg))
+    {
+        CUDA_THROW_INVALID("randn mean and std must be finite");
+        RETURN_THROWS();
+    }
+    if (std_arg < 0.0)
+    {
+        CUDA_THROW_INVALID("randn std cannot be negative");
+        RETURN_THROWS();
+    }
+
+    dtype_t dtype = parse_dtype_param(dtype_str);
+    if (dtype != DTYPE_FLOAT32 && dtype != DTYPE_FLOAT64)
+    {
+        CUDA_THROW_INVALID("randn supports only float32 and float64 dtypes");
+        RETURN_THROWS();
+    }
+    if (dtype == DTYPE_FLOAT32 &&
+        (fabs(mean_arg) > (double)FLT_MAX || std_arg > (double)FLT_MAX ||
+         !isfinite((double)(float)mean_arg) || !isfinite((double)(float)std_arg)))
+    {
+        CUDA_THROW_INVALID("randn mean and std exceed the float32 range");
+        RETURN_THROWS();
+    }
+
+    HashTable *shape_ht = Z_ARRVAL_P(shape_array);
+    uint32_t shape_count = zend_hash_num_elements(shape_ht);
+    if (shape_count == 0 || shape_count > MAX_DIMS)
+    {
+        CUDA_THROW_INVALID("randn shape must contain between 1 and %d dimensions", MAX_DIMS);
+        RETURN_THROWS();
+    }
+
+    int shape[MAX_DIMS] = {0};
+    size_t elements = 1;
+    uint32_t index = 0;
+    zval *dimension;
+    ZEND_HASH_FOREACH_VAL(shape_ht, dimension)
+    {
+        if (Z_TYPE_P(dimension) != IS_LONG || Z_LVAL_P(dimension) < 0 ||
+            Z_LVAL_P(dimension) > INT_MAX)
+        {
+            CUDA_THROW_INVALID("randn shape dimensions must be non-negative integers no greater than %d", INT_MAX);
+            RETURN_THROWS();
+        }
+        shape[index++] = (int)Z_LVAL_P(dimension);
+        if (shape[index - 1] != 0 && elements > SIZE_MAX / (size_t)shape[index - 1])
+        {
+            CUDA_THROW_INVALID("randn shape size overflows the supported allocation");
+            RETURN_THROWS();
+        }
+        elements *= (size_t)shape[index - 1];
+    }
+    ZEND_HASH_FOREACH_END();
+
+    if (elements > SIZE_MAX / dtype_size(dtype))
+    {
+        CUDA_THROW_INVALID("randn allocation size overflows the supported allocation");
+        RETURN_THROWS();
+    }
+
+    tensor_t *tensor = cuda_tensor_create_randn(shape, (int)shape_count, mean_arg, std_arg, dtype);
+    if (!tensor)
+    {
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to create randn tensor");
+        RETURN_THROWS();
+    }
+
+    create_result_object(return_value, tensor);
 }
 
 ZEND_METHOD(CudaArray, transpose)
@@ -2131,4 +3015,140 @@ static tensor_t *cuda_tensor_concat(zval *tensors_array, int axis)
     }
 
     return new_tensor;
+}
+
+static tensor_t *cuda_tensor_stack(zval *tensors_array)
+{
+    HashTable *ht = Z_ARRVAL_P(tensors_array);
+    uint32_t count = zend_hash_num_elements(ht);
+    if (count == 0)
+    {
+        CUDA_THROW_INVALID("stack requires at least one tensor");
+        return NULL;
+    }
+    if ((size_t)count > (size_t)INT_MAX)
+    {
+        CUDA_THROW_INVALID("stack tensor count exceeds the supported shape size");
+        return NULL;
+    }
+
+    tensor_t **tensor_list = (tensor_t **)emalloc(sizeof(tensor_t *) * (size_t)count);
+    int first_ndims = -1;
+    dtype_t first_dtype = DTYPE_UNKNOWN;
+    int index = 0;
+    zval *entry;
+    ZEND_HASH_FOREACH_VAL(ht, entry)
+    {
+        if (Z_TYPE_P(entry) != IS_OBJECT || !instanceof_function(Z_OBJCE_P(entry), cuda_array_ce))
+        {
+            CUDA_THROW_INVALID("stack expects an array of CudaArray objects");
+            efree(tensor_list);
+            return NULL;
+        }
+        cuda_array_obj *object = php_cuda_array_fetch_valid_object(Z_OBJ_P(entry));
+        if (!object)
+        {
+            efree(tensor_list);
+            return NULL;
+        }
+
+        tensor_t *tensor = object->tensor_handle;
+        if (index == 0)
+        {
+            first_ndims = tensor->ndims;
+            first_dtype = tensor->dtype;
+            if (first_ndims >= MAX_DIMS)
+            {
+                CUDA_THROW_INVALID("stack result exceeds the maximum supported rank");
+                efree(tensor_list);
+                return NULL;
+            }
+        }
+        else
+        {
+            if (tensor->ndims != first_ndims)
+            {
+                CUDA_THROW_INVALID("stack tensors must have the same number of dimensions");
+                efree(tensor_list);
+                return NULL;
+            }
+            if (tensor->dtype != first_dtype)
+            {
+                CUDA_THROW_INVALID("stack tensors must have the same dtype");
+                efree(tensor_list);
+                return NULL;
+            }
+            for (int d = 0; d < first_ndims; d++)
+            {
+                if (tensor->shape[d] != tensor_list[0]->shape[d])
+                {
+                    CUDA_THROW_INVALID("stack tensors must have the same shape");
+                    efree(tensor_list);
+                    return NULL;
+                }
+            }
+        }
+        tensor_list[index++] = tensor;
+    }
+    ZEND_HASH_FOREACH_END();
+
+    int output_shape[MAX_DIMS];
+    output_shape[0] = (int)count;
+    if (first_ndims > 0)
+        memcpy(output_shape + 1, tensor_list[0]->shape, sizeof(int) * (size_t)first_ndims);
+
+    size_t block = tensor_list[0]->total_size;
+    if (block != 0 && (size_t)count > SIZE_MAX / block)
+    {
+        CUDA_THROW_INVALID("stack output size overflows the supported allocation");
+        efree(tensor_list);
+        return NULL;
+    }
+
+    tensor_t *result = cuda_tensor_create_empty_dtype(output_shape, first_ndims + 1, first_dtype);
+    if (!result)
+    {
+        efree(tensor_list);
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Failed to allocate stack tensor");
+        return NULL;
+    }
+
+    if (block == 0)
+    {
+        efree(tensor_list);
+        return result;
+    }
+
+    size_t block_bytes = block * tensor_list[0]->element_size;
+    cudaError_t status = cudaSuccess;
+    for (uint32_t i = 0; i < count && status == cudaSuccess; i++)
+    {
+        void *destination = (char *)result->data + (size_t)i * block_bytes;
+        tensor_t *source = tensor_list[i];
+        if (first_ndims == 0)
+        {
+            status = cudaMemcpy(destination, source->data, block_bytes, cudaMemcpyDeviceToDevice);
+        }
+        else if (is_contiguous(source))
+        {
+            status = cudaMemcpy(destination, source->data, block_bytes, cudaMemcpyDeviceToDevice);
+        }
+        else
+        {
+            status = launch_pack_strided(source->data, destination, block,
+                                         source->element_size, source->shape,
+                                         source->strides, source->ndims);
+        }
+    }
+    if (status == cudaSuccess)
+        status = cudaDeviceSynchronize();
+
+    efree(tensor_list);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(result);
+        CUDA_THROW_RUNTIME("stack CUDA copy failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return result;
 }
